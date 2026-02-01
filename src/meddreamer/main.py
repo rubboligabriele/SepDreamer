@@ -8,8 +8,8 @@ from ruamel.yaml import YAML
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 
-import tools
-from dreamer import Dreamer, MedDreamer
+import src.meddreamer.utils.tools as tools
+from src.meddreamer.dreamer import Dreamer, MedDreamer
 
 to_np = lambda x: x.detach().cpu().numpy()
 

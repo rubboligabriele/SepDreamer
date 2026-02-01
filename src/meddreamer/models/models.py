@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 
 import networks
-import tools
+import src.meddreamer.utils.tools as tools
 from fm import FMEmbedding
 
 to_np = lambda x: x.detach().cpu().numpy()

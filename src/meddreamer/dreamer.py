@@ -7,7 +7,7 @@ from tqdm import trange
 from tqdm import tqdm
 
 import models
-import tools
+import src.meddreamer.utils.tools as tools
 
 import torch
 from torch import nn
