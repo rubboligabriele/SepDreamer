@@ -5,9 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "db-dtypes>=1.4.4",
+    "google-auth-oauthlib>=1.2.4",
+    "google-cloud-bigquery>=3.40.0",
+    "google-cloud-bigquery-storage>=2.36.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "pandas>=3.0.0",
+    "pyarrow>=23.0.0",
     "ruamel-yaml>=0.19.1",
     "scikit-learn>=1.8.0",
     "scipy>=1.17.0",

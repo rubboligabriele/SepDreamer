@@ -11,4 +11,13 @@ wheels/
 
 # VS Code settings
 .vscode/
+
+# client secrets file
+/src/data_extraction/client_secret.json
+
+# data files
+/data/
 /physionet.org/
+
+# MacOS system files
+.DS_Store
