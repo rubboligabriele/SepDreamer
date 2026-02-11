@@ -94,11 +94,11 @@ MECHVENT_MEASUREMENT_CODES = (
     224701, # PSVlevel
 )
 
-MECHVENT_CODES = (
-    640, # extubated
-    720, # vent type
-    467, # O2 delivery device
-) + MECHVENT_MEASUREMENT_CODES
+# MECHVENT_CODES = (
+#     640, # extubated
+#     720, # vent type
+#     467, # O2 delivery device
+# ) + MECHVENT_MEASUREMENT_CODES
 
 PREADM_FLUID_CODES = (
     30054,30055,30101,30102,30103,30104,30105,30108,226361,226363,226364,
@@ -448,52 +448,31 @@ def mechvent_pe(mimiciii=False):
             from `physionet-data.mimiciv_3_1_icu.procedureevents` where itemid in (225792, 225794, 227194, 227712, 224385, 225433, 225468, 225477)
     """
 
-def mechvent(mimiciii=False):
+def mechvent(mimiciii: bool = False) -> str:
     """
-    Default mechanical ventilation information, extracted from chartevents. This
-    is supplemented by data from the procedureevents table in MIMIC-IV.
+    Mechanical ventilation evidence from CHARTEVENTS (MIMIC-IV only).
+
+    IMPORTANT:
+    - In MIMIC-IV, the old MIMIC-III itemids (640/720/467) are NOT present in chartevents.
+    - Therefore, this function returns a *CE evidence* table: if any ventilator-setting/measurement
+      itemid is charted at a timestamp, we mark mechvent=1 at that (stay_id, charttime).
+    - extubated/selfextubated are set to 0 here (those should come from procedureevents via mechvent_pe).
     """
-    query = """
-        select
-            {stay_id_field} as icustay_id, UNIX_SECONDS(TIMESTAMP(charttime)) as charttime    -- case statement determining whether it is an instance of mech vent
-            , max(
-            case
-                when itemid is null or value is null then 0 -- can't have null values
-                when itemid = 720 and value != 'Other/Remarks' THEN 1  -- VentTypeRecorded
-                when itemid = 467 and value = 'Ventilator' THEN 1 -- O2 delivery device == ventilator
-                when itemid in {measurement_codes}
-                THEN 1
-                else 0
-            end
-            ) as MechVent
-            , max(
-                case when itemid is null or value is null then 0
-                when itemid = 640 and value = 'Extubated' then 1
-                when itemid = 640 and value = 'Self Extubation' then 1
-                else 0
-                end
-                )
-                as Extubated
-            , max(
-                case when itemid is null or value is null then 0
-                when itemid = 640 and value = 'Self Extubation' then 1
-                else 0
-                end
-                )
-                as SelfExtubated
-        from `{events}` ce
-        where value is not null
-        and itemid in {codes}
-        group by icustay_id, charttime
-    """
-    kwargs = {'codes': repr(MECHVENT_CODES), 'measurement_codes': repr(MECHVENT_MEASUREMENT_CODES)}
     if mimiciii:
-        kwargs['stay_id_field'] = 'icustay_id'
-        kwargs['events'] = 'physionet-data.mimiciii_clinical.chartevents'
-    else:
-        kwargs['stay_id_field'] = 'stay_id'
-        kwargs['events'] = 'physionet-data.mimiciv_3_1_icu.chartevents'
-    return query.format(**kwargs)
+        raise ValueError("This mechvent() implementation is intended for MIMIC-IV only (use mechvent_pe for PE).")
+
+    return """
+        select distinct
+            stay_id as icustay_id,
+            UNIX_SECONDS(TIMESTAMP(charttime)) as charttime,
+            1 as MechVent,
+            0 as Extubated,
+            0 as SelfExtubated
+        from `physionet-data.mimiciv_3_1_icu.chartevents`
+        where value is not null
+          and itemid in {measurement_codes}
+        order by icustay_id, charttime
+    """.format(measurement_codes=repr(MECHVENT_MEASUREMENT_CODES))
 
 def microbio(mimiciii=False):
     """
