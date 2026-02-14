@@ -109,7 +109,7 @@ if __name__ == '__main__':
     print("Using mechvent_pe as mechvent [MIMIC-IV]")
     mechvent = load_csv(os.path.join(in_dir, 'mechvent_pe.csv'), null_icustayid=True)
     mechvent = mechvent[~pd.isna(mechvent[C_ICUSTAYID])]
-    mechvent.to_csv(os.path.join(out_dir, "mechvent.csv"), index=False)
+    mechvent.to_csv(os.path.join(out_dir, "mechvent_pe.csv"), index=False)
     
     print("Correcting nans [vaso_mv]")
     vaso_mv = load_csv(os.path.join(in_dir, 'vaso_mv.csv'), null_icustayid=True)

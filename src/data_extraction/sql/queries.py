@@ -620,65 +620,355 @@ def uo(mimiciii=False):
         kwargs['events'] = 'physionet-data.mimiciv_3_1_icu.outputevents'
     return query.format(**kwargs)
 
-def vaso_base(mv, mimiciii=False):
-    """
-    Real-time vasopressor input from Metavision. From the original Komorowski
-    data extraction code:
-    * Drugs converted in noradrenaline-equivalent
-    * Body weight assumed 80 kg when missing
+# def vaso_base(mv, mimiciii=False):
+#     """
+#     Real-time vasopressor input from Metavision. From the original Komorowski
+#     data extraction code:
+#     * Drugs converted in noradrenaline-equivalent
+#     * Body weight assumed 80 kg when missing
     
-    Drugs selected are epinephrine, dopamine, phenylephrine, norepinephrine,
-    vasopressin. CareVue also contains Levophed and Neosynephrine (extracted in
-    MIMIC-III only)."
-    """
-    query = """
-        select {stay_id_field} as icustay_id,
-            itemid, 
-            {times},
-            case when itemid in (30120,221906,30047) and rateuom='mcg/kg/min' then round(cast(rate as numeric),3)  -- norad
-                when itemid in (30120,221906,30047) and rateuom='mcg/min' then round(cast(rate/80 as numeric),3)  -- norad
-                when itemid in (30119,221289) and rateuom='mcg/kg/min' then round(cast(rate as numeric),3) -- epi
-                when itemid in (30119,221289) and rateuom='mcg/min' then round(cast(rate/80 as numeric),3) -- epi
-                when itemid in (30051,222315) and rate > 0.2 then round(cast(rate*5/60  as numeric),3) -- vasopressin, in U/h
-                when itemid in (30051,222315) and rateuom='units/min' then round(cast(rate*5 as numeric),3) -- vasopressin
-                when itemid in (30051,222315) and rateuom='units/hour' then round(cast(rate*5/60 as numeric),3) -- vasopressin
-                when itemid in (30128,221749,30127) and rateuom='mcg/kg/min' then round(cast(rate*0.45 as numeric),3) -- phenyl
-                when itemid in (30128,221749,30127) and rateuom='mcg/min' then round(cast(rate*0.45 / 80 as numeric),3) -- phenyl
-                when itemid in (221662,30043,30307) and rateuom='mcg/kg/min' then round(cast(rate*0.01 as numeric),3)  -- dopa
-                when itemid in (221662,30043,30307) and rateuom='mcg/min' then round(cast(rate*0.01/80 as numeric),3) else null end as rate_std-- dopa
-        from `{events}`
-        where itemid in {codes} and rate is not null {mv_conditions}
-        order by icustay_id, itemid, {sort}
-    """
-    kwargs = {'codes': repr(VASO_CODES)}
-    if mv:
-        kwargs['mv_conditions'] = "and statusdescription <> 'Rewritten'"
-        kwargs['times'] = "UNIX_SECONDS(TIMESTAMP(starttime)) as starttime, UNIX_SECONDS(TIMESTAMP(endtime)) as endtime"
-        kwargs['sort'] = "starttime"
-    else:
-        kwargs['mv_conditions'] = ""
-        kwargs['times'] = "UNIX_SECONDS(TIMESTAMP(charttime)) as charttime"
-        kwargs['sort'] = "charttime"
+#     Drugs selected are epinephrine, dopamine, phenylephrine, norepinephrine,
+#     vasopressin. CareVue also contains Levophed and Neosynephrine (extracted in
+#     MIMIC-III only)."
+#     """
+#     query = """
+#         select {stay_id_field} as icustay_id,
+#             itemid, 
+#             {times},
+#             case when itemid in (30120,221906,30047) and rateuom='mcg/kg/min' then round(cast(rate as numeric),3)  -- norad
+#                 when itemid in (30120,221906,30047) and rateuom='mcg/min' then round(cast(rate/80 as numeric),3)  -- norad
+#                 when itemid in (30119,221289) and rateuom='mcg/kg/min' then round(cast(rate as numeric),3) -- epi
+#                 when itemid in (30119,221289) and rateuom='mcg/min' then round(cast(rate/80 as numeric),3) -- epi
+#                 when itemid in (30051,222315) and rate > 0.2 then round(cast(rate*5/60  as numeric),3) -- vasopressin, in U/h
+#                 when itemid in (30051,222315) and rateuom='units/min' then round(cast(rate*5 as numeric),3) -- vasopressin
+#                 when itemid in (30051,222315) and rateuom='units/hour' then round(cast(rate*5/60 as numeric),3) -- vasopressin
+#                 when itemid in (30128,221749,30127) and rateuom='mcg/kg/min' then round(cast(rate*0.45 as numeric),3) -- phenyl
+#                 when itemid in (30128,221749,30127) and rateuom='mcg/min' then round(cast(rate*0.45 / 80 as numeric),3) -- phenyl
+#                 when itemid in (221662,30043,30307) and rateuom='mcg/kg/min' then round(cast(rate*0.01 as numeric),3)  -- dopa
+#                 when itemid in (221662,30043,30307) and rateuom='mcg/min' then round(cast(rate*0.01/80 as numeric),3) else null end as rate_std-- dopa
+#         from `{events}`
+#         where itemid in {codes} and rate is not null {mv_conditions}
+#         order by icustay_id, itemid, {sort}
+#     """
+#     kwargs = {'codes': repr(VASO_CODES)}
+#     if mv:
+#         kwargs['mv_conditions'] = "and statusdescription <> 'Rewritten'"
+#         kwargs['times'] = "UNIX_SECONDS(TIMESTAMP(starttime)) as starttime, UNIX_SECONDS(TIMESTAMP(endtime)) as endtime"
+#         kwargs['sort'] = "starttime"
+#     else:
+#         kwargs['mv_conditions'] = ""
+#         kwargs['times'] = "UNIX_SECONDS(TIMESTAMP(charttime)) as charttime"
+#         kwargs['sort'] = "charttime"
 
+#     if mimiciii:
+#         kwargs['stay_id_field'] = 'icustay_id'
+#         kwargs['stays'] = 'physionet-data.mimiciii_clinical.icustays'
+#         if mv:
+#             kwargs['events'] = 'physionet-data.mimiciii_clinical.inputevents_mv'
+#         else:
+#             kwargs['events'] = 'physionet-data.mimiciii_clinical.inputevents_cv'
+#     else:
+#         kwargs['stay_id_field'] = 'stay_id'
+#         kwargs['stays'] = 'physionet-data.mimiciv_3_1_icu.icustays'
+#         kwargs['events'] = 'physionet-data.mimiciv_3_1_icu.inputevents'
+#     return query.format(**kwargs)
+
+# def vaso_mv(mimiciii=False):
+#     return vaso_base(True, mimiciii)
+
+# def vaso_cv(mimiciii=False):
+#     if not mimiciii: return None
+#     return vaso_base(False, mimiciii)
+
+def onset_derived(mimiciii=False):
     if mimiciii:
-        kwargs['stay_id_field'] = 'icustay_id'
-        kwargs['stays'] = 'physionet-data.mimiciii_clinical.icustays'
-        if mv:
-            kwargs['events'] = 'physionet-data.mimiciii_clinical.inputevents_mv'
-        else:
-            kwargs['events'] = 'physionet-data.mimiciii_clinical.inputevents_cv'
-    else:
-        kwargs['stay_id_field'] = 'stay_id'
-        kwargs['stays'] = 'physionet-data.mimiciv_3_1_icu.icustays'
-        kwargs['events'] = 'physionet-data.mimiciv_3_1_icu.inputevents'
-    return query.format(**kwargs)
+        return None
 
-def vaso_mv(mimiciii=False):
-    return vaso_base(True, mimiciii)
+    return """
+        SELECT
+        stay_id,
+        ANY_VALUE(subject_id) AS subject_id,
+        MIN(suspected_infection_time) AS sepsis_onset_time,
+        MIN(antibiotic_time) AS antibiotic_time,
+        MIN(culture_time) AS culture_time
+        FROM `physionet-data.mimiciv_3_1_derived.sepsis3`
+        WHERE sepsis3 = TRUE
+        AND stay_id IS NOT NULL
+        AND suspected_infection_time IS NOT NULL
+        GROUP BY stay_id;
+    """
 
-def vaso_cv(mimiciii=False):
-    if not mimiciii: return None
-    return vaso_base(False, mimiciii)
+def weight_derived(mimiciii=False):
+    if mimiciii:
+        return None
+
+    return """
+        SELECT
+        stay_id AS icustayid,
+        UNIX_SECONDS(TIMESTAMP(starttime)) AS starttime,
+        UNIX_SECONDS(TIMESTAMP(endtime)) AS endtime,
+        weight AS Weight_kg
+        FROM `physionet-data.mimiciv_3_1_derived.weight_durations`
+        WHERE stay_id IS NOT NULL
+        AND starttime IS NOT NULL
+        AND endtime IS NOT NULL
+        AND weight IS NOT NULL
+    """
+
+def vaso_derived(mimiciii=False):
+    return """
+        SELECT
+            stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(starttime)) AS starttime,
+            UNIX_SECONDS(TIMESTAMP(endtime)) AS endtime,
+            norepinephrine_equivalent_dose AS rate_std
+        FROM `physionet-data.mimiciv_3_1_derived.norepinephrine_equivalent_dose`
+        WHERE norepinephrine_equivalent_dose IS NOT NULL
+        ORDER BY icustay_id, starttime
+    """
+
+def gcs_derived(mimiciii=False):
+    return """
+        SELECT
+            stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+            gcs
+        FROM `physionet-data.mimiciv_3_1_derived.gcs`
+        WHERE gcs IS NOT NULL
+    """
+
+def vital_derived(mimiciii=False):
+    return """
+        SELECT
+            stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+            heart_rate,
+            sbp,
+            dbp,
+            mbp,
+            resp_rate,
+            temperature,
+            spo2
+        FROM `physionet-data.mimiciv_3_1_derived.vitalsign`
+    """
+
+def bg_derived(mimiciii=False):
+    if mimiciii:
+        return None
+
+    return """
+        SELECT
+        stay_id AS icustay_id,
+        UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+        fio2,
+        po2  AS pao2,
+        pco2 AS paco2,
+        ph,
+        baseexcess,
+        lactate,
+        pao2fio2ratio
+        FROM (
+        SELECT
+            i.stay_id,
+            bg.*,
+            ROW_NUMBER() OVER (
+            PARTITION BY bg.subject_id, bg.hadm_id, bg.charttime
+            ORDER BY ABS(TIMESTAMP_DIFF(bg.charttime, i.intime, SECOND))
+            ) AS rn
+        FROM `physionet-data.mimiciv_3_1_derived.bg` bg
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+            ON bg.subject_id = i.subject_id
+        AND bg.hadm_id   = i.hadm_id
+        AND bg.charttime BETWEEN i.intime AND i.outtime
+        WHERE bg.charttime IS NOT NULL
+        )
+        WHERE rn = 1
+        ORDER BY icustay_id, charttime;
+    """
+
+def cbc_derived(mimiciii=False):
+    if mimiciii:
+        return None
+    return """
+        SELECT
+        stay_id AS icustay_id,
+        UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+        wbc,
+        hemoglobin,
+        hematocrit,
+        platelet
+        FROM (
+        SELECT
+            i.stay_id,
+            cbc.*,
+            ROW_NUMBER() OVER (
+            PARTITION BY cbc.subject_id, cbc.hadm_id, cbc.charttime
+            ORDER BY ABS(TIMESTAMP_DIFF(cbc.charttime, i.intime, SECOND))
+            ) AS rn
+        FROM `physionet-data.mimiciv_3_1_derived.complete_blood_count` cbc
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+            ON cbc.subject_id = i.subject_id
+        AND cbc.hadm_id   = i.hadm_id
+        AND cbc.charttime BETWEEN i.intime AND i.outtime
+        WHERE cbc.charttime IS NOT NULL
+        )
+        WHERE rn = 1
+        ORDER BY icustay_id, charttime;
+    """
+
+def labs_derived(mimiciii=False):
+    if mimiciii:
+        return None
+    return """
+        SELECT
+        stay_id AS icustay_id,
+        UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+        bun,
+        creatinine,
+        calcium,
+        bicarbonate AS co2
+        FROM (
+        SELECT
+            i.stay_id,
+            chem.*,
+            ROW_NUMBER() OVER (
+            PARTITION BY chem.subject_id, chem.hadm_id, chem.charttime
+            ORDER BY ABS(TIMESTAMP_DIFF(chem.charttime, i.intime, SECOND))
+            ) AS rn
+        FROM `physionet-data.mimiciv_3_1_derived.chemistry` chem
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+            ON chem.subject_id = i.subject_id
+        AND chem.hadm_id   = i.hadm_id
+        AND chem.charttime BETWEEN i.intime AND i.outtime
+        WHERE chem.charttime IS NOT NULL
+            AND (
+            chem.bun IS NOT NULL OR
+            chem.creatinine IS NOT NULL OR
+            chem.calcium IS NOT NULL OR
+            chem.bicarbonate IS NOT NULL
+            )
+        )
+        WHERE rn = 1
+        ORDER BY icustay_id, charttime;
+    """
+
+def ion_cal_derived(mimiciii=False):
+    if mimiciii:
+        return None
+    return """
+        SELECT
+            i.stay_id AS icustayid,
+            UNIX_SECONDS(TIMESTAMP(le.charttime)) AS charttime,
+            le.valuenum AS ionized_ca
+        FROM `physionet-data.mimiciv_3_1_hosp.labevents` le
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+        ON le.subject_id = i.subject_id
+        AND le.hadm_id   = i.hadm_id
+        AND le.charttime BETWEEN i.intime AND i.outtime
+        WHERE le.itemid = 50808
+        AND le.valuenum IS NOT NULL
+        AND le.charttime IS NOT NULL
+        ORDER BY icustayid, charttime;
+    """
+
+def mag_derived(mimiciii=False):
+    if mimiciii:
+        return None
+    return """
+        SELECT
+        stay_id AS icustay_id,
+        UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+        magnesium
+        FROM (
+        SELECT
+            i.stay_id,
+            le.charttime,
+            le.valuenum AS magnesium,
+            ROW_NUMBER() OVER (
+            PARTITION BY le.subject_id, le.hadm_id, le.charttime
+            ORDER BY ABS(TIMESTAMP_DIFF(le.charttime, i.intime, SECOND))
+            ) AS rn
+        FROM `physionet-data.mimiciv_3_1_hosp.labevents` le
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+            ON le.subject_id = i.subject_id
+        AND le.hadm_id   = i.hadm_id
+        AND le.charttime BETWEEN i.intime AND i.outtime
+        WHERE le.itemid = 50960
+            AND le.valuenum IS NOT NULL
+            AND le.charttime IS NOT NULL
+        )
+        WHERE rn = 1
+        ORDER BY icustay_id, charttime;
+    """
+
+def liver_derived(mimiciii=False):
+    if mimiciii:
+        return None
+
+    return """
+        SELECT
+            i.stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(e.charttime)) AS charttime,
+            e.ast,
+            e.alt,
+            e.bilirubin_total
+        FROM `physionet-data.mimiciv_3_1_derived.enzyme` e
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+          ON e.subject_id = i.subject_id
+         AND e.hadm_id    = i.hadm_id
+         AND e.charttime BETWEEN i.intime AND i.outtime
+        WHERE e.charttime IS NOT NULL
+        ORDER BY icustay_id, charttime
+    """
+
+def coag_derived(mimiciii=False):
+    if mimiciii:
+        return None
+    return """
+        SELECT
+            i.stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(co.charttime)) AS charttime,
+            co.pt,
+            co.inr,
+            co.ptt
+        FROM `physionet-data.mimiciv_3_1_derived.coagulation` co
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+          ON co.subject_id = i.subject_id
+         AND co.hadm_id    = i.hadm_id
+         AND co.charttime BETWEEN i.intime AND i.outtime
+        WHERE co.charttime IS NOT NULL
+        ORDER BY icustay_id, charttime
+    """
+
+def urine_derived(mimiciii=False):
+    return """
+        SELECT
+            stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+            urineoutput
+        FROM `physionet-data.mimiciv_3_1_derived.urine_output`
+        """
+
+def mechvent_derived(mimiciii=False):
+    return """
+        SELECT
+            stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(starttime)) AS starttime,
+            UNIX_SECONDS(TIMESTAMP(endtime)) AS endtime,
+            ventilation_status
+        FROM `physionet-data.mimiciv_3_1_derived.ventilation`
+    """
+
+def sofa_derived(mimiciii=False):
+    return """
+        SELECT stay_id AS icustay_id,
+            hr,
+            UNIX_SECONDS(TIMESTAMP(starttime)) AS starttime,
+            UNIX_SECONDS(TIMESTAMP(endtime))   AS endtime,
+            sofa_24hours AS sofa
+        FROM `physionet-data.mimiciv_3_1_derived.sofa`
+        WHERE hr >= 0;
+    """
 
 def notes(mimiciii=False):
     if not mimiciii: return None
@@ -704,23 +994,43 @@ def notes(mimiciii=False):
     """    
     return query
 
+# SQL_QUERY_FUNCTIONS = {
+#     "abx": abx,
+#     "ce": ce,
+#     "comorbidities": comorbidities,
+#     "culture": culture,
+#     "demog": demog,
+#     "fluid_mv": fluid_mv,
+#     "fluid_cv": fluid_cv,
+#     "labs_ce": labs_ce,
+#     "labs_le": labs_le,
+#     "mechvent_pe": mechvent_pe,
+#     "mechvent": mechvent,
+#     "microbio": microbio,
+#     "preadm_fluid": preadm_fluid,
+#     "preadm_uo": preadm_uo,
+#     "uo": uo,
+#     "vaso_mv": vaso_mv,
+#     "vaso_cv": vaso_cv,
+#     "notes": notes,
+# }
+
 SQL_QUERY_FUNCTIONS = {
-    "abx": abx,
-    "ce": ce,
-    "comorbidities": comorbidities,
-    "culture": culture,
     "demog": demog,
-    "fluid_mv": fluid_mv,
-    "fluid_cv": fluid_cv,
-    "labs_ce": labs_ce,
-    "labs_le": labs_le,
-    "mechvent_pe": mechvent_pe,
-    "mechvent": mechvent,
-    "microbio": microbio,
-    "preadm_fluid": preadm_fluid,
-    "preadm_uo": preadm_uo,
-    "uo": uo,
-    "vaso_mv": vaso_mv,
-    "vaso_cv": vaso_cv,
-    "notes": notes,
+    "comorbidities": comorbidities,
+    "onset_derived": onset_derived,
+    "weight_derived": weight_derived,
+    "vaso_derived": vaso_derived,
+    "gcs_derived": gcs_derived,
+    "vital_derived": vital_derived,
+    "bg_derived": bg_derived,
+    "cbc_derived": cbc_derived,
+    "labs_derived": labs_derived,
+    "ion_cal_derived": ion_cal_derived,
+    "mag_derived": mag_derived,
+    "liver_derived": liver_derived,
+    "coag_derived": coag_derived,
+    "urine_derived": urine_derived,
+    "mechvent_derived": mechvent_derived,
+    "sofa_derived": sofa_derived,
 }

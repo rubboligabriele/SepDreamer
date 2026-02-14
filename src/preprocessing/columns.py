@@ -103,9 +103,12 @@ C_CUMULATED_BALANCE = 'cumulated_balance'
 
 ######### Onset data
 
-C_ONSET_TIME = "onset_time"
 C_FIRST_TIMESTEP = "first_timestep"
 C_LAST_TIMESTEP = "last_timestep"
+
+C_ONSET_TIME = "sepsis_onset_time"
+C_ANTIBIOTIC_TIME = "antibiotic_time"
+C_CULTURE_TIME = "culture_time"
 
 ######### Derived dataframes
 
@@ -199,10 +202,52 @@ C_DEPRESSION = "depression"
 # Additional computed fields on raw data
 C_NORM_INFUSION_RATE = "norm_infusion_rate"
 
+# RAW_DATA_COLUMNS = {
+#     "abx": [C_HADM_ID, C_ICUSTAYID, C_STARTDATE, C_ENDDATE, C_GSN, C_NDC,
+#             C_DOSE_VAL, C_DOSE_UNIT, C_ROUTE],
+#     "culture": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTTIME, C_ITEMID],
+#     "comorbidities": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CONGESTIVE_HEART_FAILURE,
+#         C_CARDIAC_ARRHYTHMIAS, C_VALVULAR_DISEASE,
+#         C_PULMONARY_CIRCULATION, C_PERIPHERAL_VASCULAR, C_HYPERTENSION, C_PARALYSIS,
+#         C_OTHER_NEUROLOGICAL, C_CHRONIC_PULMONARY, C_DIABETES_UNCOMPLICATED,
+#         C_DIABETES_COMPLICATED, C_HYPOTHYROIDISM, C_RENAL_FAILURE, C_LIVER_DISEASE,
+#         C_PEPTIC_ULCER, C_AIDS, C_LYMPHOMA, C_METASTATIC_CANCER, C_SOLID_TUMOR,
+#         C_RHEUMATOID_ARTHRITIS, C_COAGULOPATHY, C_OBESITY, C_WEIGHT_LOSS,
+#         C_FLUID_ELECTROLYTE, C_BLOOD_LOSS_ANEMIA, C_DEFICIENCY_ANEMIAS, C_ALCOHOL_ABUSE,
+#         C_DRUG_ABUSE, C_PSYCHOSES, C_DEPRESSION],
+#     "microbio": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTTIME, C_CHARTDATE, C_ORG_ITEMID, C_SPEC_ITEMID, C_AB_ITEMID, C_INTERPRETATION],
+#     "demog": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_ADMITTIME, C_DISCHTIME,
+#               C_ADM_ORDER, C_UNIT, C_INTIME, C_OUTTIME, C_LOS,
+#               C_AGE, C_DOB, C_DOD, C_EXPIRE_FLAG, C_GENDER,
+#               C_MORTA_HOSP, C_MORTA_90, C_ELIXHAUSER],
+#     "ce": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUENUM],
+#     "labs_ce": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUENUM],
+#     "labs_le": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUENUM],
+#     "mechvent": [C_ICUSTAYID, C_CHARTTIME, C_MECHVENT, C_EXTUBATED, C_SELFEXTUBATED],
+#     "mechvent_pe": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_STARTTIME,
+#         C_ENDTIME, C_MECHVENT, C_EXTUBATED, C_SELFEXTUBATED,
+#         C_ITEMID, C_VALUE],
+#     "preadm_fluid": [C_ICUSTAYID, C_INPUT_PREADM],
+#     "fluid_mv": [C_ICUSTAYID, C_STARTTIME, C_ENDTIME, C_ITEMID, C_AMOUNT,
+#         C_RATE, C_TEV],
+#     "fluid_cv": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_AMOUNT, C_TEV],
+#     "vaso_mv": [C_ICUSTAYID, C_ITEMID, C_STARTTIME, C_ENDTIME, C_RATESTD],
+#     "vaso_cv": [C_ICUSTAYID, C_ITEMID, C_CHARTTIME, C_RATESTD],
+#     "preadm_uo": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUE, C_DATEDIFF_MINUTES],
+#     "uo": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUE],
+#     "notes": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTDATE, C_CHARTTIME,
+#               C_CATEGORY, C_TEXT]
+# }
+
 RAW_DATA_COLUMNS = {
+    # -------------------------
+    # ORIGINAL (unchanged)
+    # -------------------------
     "abx": [C_HADM_ID, C_ICUSTAYID, C_STARTDATE, C_ENDDATE, C_GSN, C_NDC,
             C_DOSE_VAL, C_DOSE_UNIT, C_ROUTE],
+
     "culture": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTTIME, C_ITEMID],
+
     "comorbidities": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CONGESTIVE_HEART_FAILURE,
         C_CARDIAC_ARRHYTHMIAS, C_VALVULAR_DISEASE,
         C_PULMONARY_CIRCULATION, C_PERIPHERAL_VASCULAR, C_HYPERTENSION, C_PARALYSIS,
@@ -212,29 +257,113 @@ RAW_DATA_COLUMNS = {
         C_RHEUMATOID_ARTHRITIS, C_COAGULOPATHY, C_OBESITY, C_WEIGHT_LOSS,
         C_FLUID_ELECTROLYTE, C_BLOOD_LOSS_ANEMIA, C_DEFICIENCY_ANEMIAS, C_ALCOHOL_ABUSE,
         C_DRUG_ABUSE, C_PSYCHOSES, C_DEPRESSION],
-    "microbio": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTTIME, C_CHARTDATE, C_ORG_ITEMID, C_SPEC_ITEMID, C_AB_ITEMID, C_INTERPRETATION],
+
+    "microbio": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTTIME, C_CHARTDATE,
+                 C_ORG_ITEMID, C_SPEC_ITEMID, C_AB_ITEMID, C_INTERPRETATION],
+
     "demog": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_ADMITTIME, C_DISCHTIME,
               C_ADM_ORDER, C_UNIT, C_INTIME, C_OUTTIME, C_LOS,
               C_AGE, C_DOB, C_DOD, C_EXPIRE_FLAG, C_GENDER,
               C_MORTA_HOSP, C_MORTA_90, C_ELIXHAUSER],
-    "ce": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUENUM],
-    "labs_ce": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUENUM],
-    "labs_le": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUENUM],
-    "mechvent": [C_ICUSTAYID, C_CHARTTIME, C_MECHVENT, C_EXTUBATED, C_SELFEXTUBATED],
-    "mechvent_pe": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_STARTTIME,
-        C_ENDTIME, C_MECHVENT, C_EXTUBATED, C_SELFEXTUBATED,
-        C_ITEMID, C_VALUE],
-    "preadm_fluid": [C_ICUSTAYID, C_INPUT_PREADM],
-    "fluid_mv": [C_ICUSTAYID, C_STARTTIME, C_ENDTIME, C_ITEMID, C_AMOUNT,
-        C_RATE, C_TEV],
-    "fluid_cv": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_AMOUNT, C_TEV],
-    "vaso_mv": [C_ICUSTAYID, C_ITEMID, C_STARTTIME, C_ENDTIME, C_RATESTD],
-    "vaso_cv": [C_ICUSTAYID, C_ITEMID, C_CHARTTIME, C_RATESTD],
-    "preadm_uo": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUE, C_DATEDIFF_MINUTES],
-    "uo": [C_ICUSTAYID, C_CHARTTIME, C_ITEMID, C_VALUE],
-    "notes": [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTDATE, C_CHARTTIME,
-              C_CATEGORY, C_TEXT]
+
+    "onset_derived": [
+        C_ICUSTAYID,
+        C_SUBJECT_ID,
+        C_ONSET_TIME,
+        C_ANTIBIOTIC_TIME,
+        C_CULTURE_TIME,
+    ],
+
+    "weight_derived": [
+        C_ICUSTAYID,
+        C_STARTTIME,
+        C_ENDTIME,
+        C_WEIGHT
+    ],
+
+    "vaso_derived": [
+        C_ICUSTAYID,
+        C_STARTTIME,
+        C_ENDTIME,
+        C_RATESTD
+    ],
+
+    "gcs_derived": [
+        C_ICUSTAYID,
+        C_CHARTTIME,
+        C_GCS
+    ],
+
+    "vital_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_HR, C_SYSBP, C_DIABP, C_MEANBP,
+        C_RR, C_TEMP_C, C_SPO2
+    ],
+
+    "bg_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_FIO2_1, C_PAO2, C_PACO2,
+        C_ARTERIAL_PH, C_ARTERIAL_BE,
+        C_ARTERIAL_LACTATE,
+        C_PAO2_FIO2
+    ],
+
+    "cbc_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_WBC_COUNT, C_HB, C_HT,
+        C_PLATELETS_COUNT
+    ],
+
+    "labs_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_BUN,
+        C_CREATININE,
+        C_CALCIUM,
+        C_CO2_MEQL
+    ],
+
+    "ion_cal_derived": [
+        C_ICUSTAYID,
+        C_CHARTTIME,
+        C_IONISED_CA
+    ],
+
+    "mag_derived": [
+        C_ICUSTAYID,
+        C_CHARTTIME,
+        C_MAGNESIUM
+    ],
+
+    "liver_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_SGOT, C_SGPT,
+        C_TOTAL_BILI
+    ],
+
+    "coag_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_PT, C_INR, C_PTT
+    ],
+
+    "urine_derived": [
+        C_ICUSTAYID, C_CHARTTIME,
+        C_OUTPUT_TOTAL
+    ],
+
+    "mechvent_derived": [
+        C_ICUSTAYID, C_STARTTIME,
+        C_ENDTIME, C_MECHVENT
+    ],
+
+    "sofa_derived": [
+        C_ICUSTAYID,
+        "hr",
+        C_STARTTIME,
+        C_ENDTIME,
+        C_SOFA
+    ],
 }
+
 
 DTYPE_SPEC = {
     C_HADM_ID: pd.Int64Dtype(),

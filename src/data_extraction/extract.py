@@ -146,7 +146,7 @@ def main():
     
     out_dir = args.output_dir or os.path.join(PARENT_DIR, 'data', 'raw_data')
     if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
+        os.makedirs(out_dir, exist_ok=True)
     for file_name, fn in SQL_QUERY_FUNCTIONS.items():
         print(file_name)
         load_data(bq_client, elixhauser_table, file_name, fn, out_dir, mimiciii=args.mimiciii, skip_if_present=args.skip_existing)

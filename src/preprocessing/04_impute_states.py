@@ -84,176 +84,176 @@ def convert_fio2_units(df, provenance=None, metadata=None):
     df.loc[missing_fio2, C_FIO2_100] = df.loc[missing_fio2, C_FIO2_1] * 100
     return df
     
-# def estimate_fio2(df, provenance=None):
-#     # First fill in missing values
-#     df = convert_fio2_units(df, provenance=provenance, metadata="R1")
+def estimate_fio2(df, provenance=None):
+    # First fill in missing values
+    df = convert_fio2_units(df, provenance=provenance, metadata="R1")
     
-#     sah_fio2 = {}
-#     for col in [C_INTERFACE, C_FIO2_100, C_O2FLOW]:    
-#         print("SAH on " + col)
-#         sah_fio2[col] = sample_and_hold(df[C_ICUSTAYID], df[C_TIMESTEP], df[col], SAH_HOLD_DURATION[col])
-#         print("Eliminated {:.1f}% of NA values".format((1 - pd.isna(sah_fio2[col]).sum() / pd.isna(df[col]).sum()) * 100))
+    sah_fio2 = {}
+    for col in [C_INTERFACE, C_FIO2_100, C_O2FLOW]:    
+        print("SAH on " + col)
+        sah_fio2[col] = sample_and_hold(df[C_ICUSTAYID], df[C_TIMESTEP], df[col], SAH_HOLD_DURATION[col])
+        print("Eliminated {:.1f}% of NA values".format((1 - pd.isna(sah_fio2[col]).sum() / pd.isna(df[col]).sum()) * 100))
     
-#     # NO FiO2, YES O2 flow, no interface OR cannula
-#     print('NO FiO2, YES O2 flow, no interface OR cannula ', end='')
-#     mask = (pd.isna(sah_fio2[C_FIO2_100]) & ~pd.isna(sah_fio2[C_O2FLOW]) & 
-#             ((sah_fio2[C_INTERFACE] == 0) | (sah_fio2[C_INTERFACE] == 2)))
-#     print('({} rows) '.format(mask.sum()), end='')
-#     if mask.any():
-#         if provenance:
-#             provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C1")
-#         df.loc[mask, C_FIO2_100] = fill_stepwise(sah_fio2[C_O2FLOW].loc[mask], zip(*(
-#             [15, 12, 10, 8, 6, 5, 4, 3, 2, 1],
-#             [70, 62, 55, 50, 44, 40, 36, 32, 28, 24]
-#         )))
-#     print('[DONE]')
+    # NO FiO2, YES O2 flow, no interface OR cannula
+    print('NO FiO2, YES O2 flow, no interface OR cannula ', end='')
+    mask = (pd.isna(sah_fio2[C_FIO2_100]) & ~pd.isna(sah_fio2[C_O2FLOW]) & 
+            ((sah_fio2[C_INTERFACE] == 0) | (sah_fio2[C_INTERFACE] == 2)))
+    print('({} rows) '.format(mask.sum()), end='')
+    if mask.any():
+        if provenance:
+            provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C1")
+        df.loc[mask, C_FIO2_100] = fill_stepwise(sah_fio2[C_O2FLOW].loc[mask], zip(*(
+            [15, 12, 10, 8, 6, 5, 4, 3, 2, 1],
+            [70, 62, 55, 50, 44, 40, 36, 32, 28, 24]
+        )))
+    print('[DONE]')
 
-#     # NO FiO2, NO O2 flow, no interface OR cannula
-#     print('NO FiO2, NO O2 flow, no interface OR cannula ', end='')
-#     mask = (pd.isna(sah_fio2[C_FIO2_100]) & pd.isna(sah_fio2[C_O2FLOW]) & 
-#             ((sah_fio2[C_INTERFACE] == 0) | (sah_fio2[C_INTERFACE] == 2)))
-#     print('({} rows) '.format(mask.sum()), end='')
-#     if mask.any():
-#         if provenance:
-#             provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C2")
-#         df.loc[mask, C_FIO2_100] = 21
-#     print('[DONE]')
+    # NO FiO2, NO O2 flow, no interface OR cannula
+    print('NO FiO2, NO O2 flow, no interface OR cannula ', end='')
+    mask = (pd.isna(sah_fio2[C_FIO2_100]) & pd.isna(sah_fio2[C_O2FLOW]) & 
+            ((sah_fio2[C_INTERFACE] == 0) | (sah_fio2[C_INTERFACE] == 2)))
+    print('({} rows) '.format(mask.sum()), end='')
+    if mask.any():
+        if provenance:
+            provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C2")
+        df.loc[mask, C_FIO2_100] = 21
+    print('[DONE]')
 
-#     # NO FiO2, YES O2 flow, face mask OR.... OR ventilator (assume it's face mask)
-#     print('NO FiO2, YES O2 flow, face mask OR.... OR ventilator (assume it\'s face mask) ', end='')
-#     mask = (pd.isna(sah_fio2[C_FIO2_100]) & ~pd.isna(sah_fio2[C_O2FLOW]) & 
-#             (pd.isna(sah_fio2[C_INTERFACE]) | sah_fio2[C_INTERFACE].isin((1, 3, 4, 5, 6, 9, 10))))
-#     print('({} rows) '.format(mask.sum()), end='')
-#     if mask.any():
-#         if provenance:
-#             provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C3")
-#         df.loc[mask, C_FIO2_100] = fill_stepwise(sah_fio2[C_O2FLOW].loc[mask], zip(*(
-#             [15, 12, 10, 8, 6, 4],
-#             [75, 69, 66, 58, 40, 36]
-#         )))
-#     print('[DONE]')
+    # NO FiO2, YES O2 flow, face mask OR.... OR ventilator (assume it's face mask)
+    print('NO FiO2, YES O2 flow, face mask OR.... OR ventilator (assume it\'s face mask) ', end='')
+    mask = (pd.isna(sah_fio2[C_FIO2_100]) & ~pd.isna(sah_fio2[C_O2FLOW]) & 
+            (pd.isna(sah_fio2[C_INTERFACE]) | sah_fio2[C_INTERFACE].isin((1, 3, 4, 5, 6, 9, 10))))
+    print('({} rows) '.format(mask.sum()), end='')
+    if mask.any():
+        if provenance:
+            provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C3")
+        df.loc[mask, C_FIO2_100] = fill_stepwise(sah_fio2[C_O2FLOW].loc[mask], zip(*(
+            [15, 12, 10, 8, 6, 4],
+            [75, 69, 66, 58, 40, 36]
+        )))
+    print('[DONE]')
 
-#     # NO FiO2, NO O2 flow, face mask OR ....OR ventilator
-#     print('NO FiO2, NO O2 flow, face mask OR ....OR ventilator ', end='')
-#     mask = (pd.isna(sah_fio2[C_FIO2_100]) & pd.isna(sah_fio2[C_O2FLOW]) & 
-#             (pd.isna(sah_fio2[C_INTERFACE]) | sah_fio2[C_INTERFACE].isin((1, 3, 4, 5, 6, 9, 10))))
-#     print('({} rows) '.format(mask.sum()), end='')
-#     if mask.any():
-#         if provenance:
-#             provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C4")
-#         df.loc[mask, C_FIO2_100] = pd.NA
-#     print('[DONE]')
+    # NO FiO2, NO O2 flow, face mask OR ....OR ventilator
+    print('NO FiO2, NO O2 flow, face mask OR ....OR ventilator ', end='')
+    mask = (pd.isna(sah_fio2[C_FIO2_100]) & pd.isna(sah_fio2[C_O2FLOW]) & 
+            (pd.isna(sah_fio2[C_INTERFACE]) | sah_fio2[C_INTERFACE].isin((1, 3, 4, 5, 6, 9, 10))))
+    print('({} rows) '.format(mask.sum()), end='')
+    if mask.any():
+        if provenance:
+            provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C4")
+        df.loc[mask, C_FIO2_100] = pd.NA
+    print('[DONE]')
 
-#     # NO FiO2, YES O2 flow, Non rebreather mask
-#     print('NO FiO2, YES O2 flow, Non rebreather mask ', end='')
-#     mask = (pd.isna(sah_fio2[C_FIO2_100]) & ~pd.isna(sah_fio2[C_O2FLOW]) & sah_fio2[C_INTERFACE] == 7)
-#     print('({} rows) '.format(mask.sum()), end='')
-#     if mask.any():
-#         if provenance:
-#             provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C5")
-#         df.loc[mask, C_FIO2_100] = fill_stepwise(sah_fio2[C_O2FLOW].loc[mask], zip(*(
-#             [9.99, 8, 6],
-#             [80, 70, 60]
-#         )), zip(*(
-#             [10, 15],
-#             [90, 100]
-#         )))
-#     print('[DONE]')
+    # NO FiO2, YES O2 flow, Non rebreather mask
+    print('NO FiO2, YES O2 flow, Non rebreather mask ', end='')
+    mask = (pd.isna(sah_fio2[C_FIO2_100]) & ~pd.isna(sah_fio2[C_O2FLOW]) & sah_fio2[C_INTERFACE] == 7)
+    print('({} rows) '.format(mask.sum()), end='')
+    if mask.any():
+        if provenance:
+            provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C5")
+        df.loc[mask, C_FIO2_100] = fill_stepwise(sah_fio2[C_O2FLOW].loc[mask], zip(*(
+            [9.99, 8, 6],
+            [80, 70, 60]
+        )), zip(*(
+            [10, 15],
+            [90, 100]
+        )))
+    print('[DONE]')
 
-#     # NO FiO2, NO O2 flow, NRM
-#     print('NO FiO2, NO O2 flow, NRM ', end='')
-#     mask = (pd.isna(sah_fio2[C_FIO2_100]) & pd.isna(sah_fio2[C_O2FLOW]) & sah_fio2[C_INTERFACE] == 7)
-#     print('({} rows) '.format(mask.sum()), end='')
-#     if mask.any():
-#         if provenance:
-#             provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C6")
-#         df.loc[mask, C_FIO2_100] = pd.NA
-#     print('[DONE]')
+    # NO FiO2, NO O2 flow, NRM
+    print('NO FiO2, NO O2 flow, NRM ', end='')
+    mask = (pd.isna(sah_fio2[C_FIO2_100]) & pd.isna(sah_fio2[C_O2FLOW]) & sah_fio2[C_INTERFACE] == 7)
+    print('({} rows) '.format(mask.sum()), end='')
+    if mask.any():
+        if provenance:
+            provenance.record("FiO2 estimation", row=df.loc[mask].index, col=C_FIO2_100, metadata="C6")
+        df.loc[mask, C_FIO2_100] = pd.NA
+    print('[DONE]')
 
-#     # update again FiO2 columns
-#     df = convert_fio2_units(df, provenance=provenance, metadata="R2")
-#     print('[DONE]')
-#     return df
+    # update again FiO2 columns
+    df = convert_fio2_units(df, provenance=provenance, metadata="R2")
+    print('[DONE]')
+    return df
 
-# def estimate_gcs(rass):
-#     """
-#     Estimates the Glasgow Coma Scale value from the value of
-#     the Richmond Agitation Sedation Scale.
-#     """
-#     if rass >= 0: return 15
-#     elif rass == -1: return 14
-#     elif rass == -2: return 12
-#     elif rass == -3: return 11
-#     elif rass == -4: return 6
-#     elif rass == -5: return 3
-#     return pd.NA
+def estimate_gcs(rass):
+    """
+    Estimates the Glasgow Coma Scale value from the value of
+    the Richmond Agitation Sedation Scale.
+    """
+    if rass >= 0: return 15
+    elif rass == -1: return 14
+    elif rass == -2: return 12
+    elif rass == -3: return 11
+    elif rass == -4: return 6
+    elif rass == -5: return 3
+    return pd.NA
 
-# def estimate_vitals(df, provenance=None):
-#     # BP - if we have two values, we can impute the others using the definition of mean BP
-#     print('BP ', end='')
-#     ii = ~pd.isna(df.loc[:, C_SYSBP]) & ~pd.isna(df.loc[:, C_MEANBP]) & pd.isna(df.loc[:, C_DIABP])
-#     if provenance:
-#         provenance.record("BP estimation", row=df.loc[ii].index, col=C_DIABP)
-#     df.loc[ii, C_DIABP] = (3 * df.loc[ii, C_MEANBP] - df.loc[ii, C_SYSBP]) / 2
-#     ii = ~pd.isna(df.loc[:, C_SYSBP]) & ~pd.isna(df.loc[:, C_DIABP]) & pd.isna(df.loc[:, C_MEANBP])
-#     if provenance:
-#         provenance.record("BP estimation", row=df.loc[ii].index, col=C_MEANBP)
-#     df.loc[ii, C_MEANBP] = (df.loc[ii, C_SYSBP] + 2 * df.loc[ii, C_DIABP]) / 3
-#     ii = ~pd.isna(df.loc[:, C_MEANBP]) & ~pd.isna(df.loc[:, C_DIABP]) & pd.isna(df.loc[:, C_SYSBP])
-#     if provenance:
-#         provenance.record("BP estimation", row=df.loc[ii].index, col=C_SYSBP)
-#     df.loc[ii, C_SYSBP] = 3 * df.loc[ii, C_MEANBP] - 2 * df.loc[ii, C_DIABP]
-#     print('[DONE]')
+def estimate_vitals(df, provenance=None):
+    # BP - if we have two values, we can impute the others using the definition of mean BP
+    print('BP ', end='')
+    ii = ~pd.isna(df.loc[:, C_SYSBP]) & ~pd.isna(df.loc[:, C_MEANBP]) & pd.isna(df.loc[:, C_DIABP])
+    if provenance:
+        provenance.record("BP estimation", row=df.loc[ii].index, col=C_DIABP)
+    df.loc[ii, C_DIABP] = (3 * df.loc[ii, C_MEANBP] - df.loc[ii, C_SYSBP]) / 2
+    ii = ~pd.isna(df.loc[:, C_SYSBP]) & ~pd.isna(df.loc[:, C_DIABP]) & pd.isna(df.loc[:, C_MEANBP])
+    if provenance:
+        provenance.record("BP estimation", row=df.loc[ii].index, col=C_MEANBP)
+    df.loc[ii, C_MEANBP] = (df.loc[ii, C_SYSBP] + 2 * df.loc[ii, C_DIABP]) / 3
+    ii = ~pd.isna(df.loc[:, C_MEANBP]) & ~pd.isna(df.loc[:, C_DIABP]) & pd.isna(df.loc[:, C_SYSBP])
+    if provenance:
+        provenance.record("BP estimation", row=df.loc[ii].index, col=C_SYSBP)
+    df.loc[ii, C_SYSBP] = 3 * df.loc[ii, C_MEANBP] - 2 * df.loc[ii, C_DIABP]
+    print('[DONE]')
 
-#     # TEMP
-#     # some values recorded in the wrong column
-#     print('TEMP ', end='')
-#     ii = (df.loc[:, C_TEMP_F] > 25) & (df.loc[:, C_TEMP_F] < 45)  # tempF close to 37deg??!
-#     if provenance:
-#         provenance.record("Temp_C from Temp_F", row=df.loc[ii].index, col=C_TEMP_C, reference_col=C_TEMP_F)
-#     df.loc[ii, C_TEMP_C] = df.loc[ii, C_TEMP_F]
-#     df.loc[ii, C_TEMP_F] = np.nan
-#     ii = (df.loc[:, C_TEMP_C] > 70)  # tempC > 70?!!! probably degF
-#     if provenance:
-#         provenance.record("Temp_F from Temp_C", row=df.loc[ii].index, col=C_TEMP_F, reference_col=C_TEMP_C)
-#     df.loc[ii, C_TEMP_F] = df.loc[ii, C_TEMP_C]
-#     df.loc[ii, C_TEMP_C] = np.nan
+    # TEMP
+    # some values recorded in the wrong column
+    print('TEMP ', end='')
+    ii = (df.loc[:, C_TEMP_F] > 25) & (df.loc[:, C_TEMP_F] < 45)  # tempF close to 37deg??!
+    if provenance:
+        provenance.record("Temp_C from Temp_F", row=df.loc[ii].index, col=C_TEMP_C, reference_col=C_TEMP_F)
+    df.loc[ii, C_TEMP_C] = df.loc[ii, C_TEMP_F]
+    df.loc[ii, C_TEMP_F] = np.nan
+    ii = (df.loc[:, C_TEMP_C] > 70)  # tempC > 70?!!! probably degF
+    if provenance:
+        provenance.record("Temp_F from Temp_C", row=df.loc[ii].index, col=C_TEMP_F, reference_col=C_TEMP_C)
+    df.loc[ii, C_TEMP_F] = df.loc[ii, C_TEMP_C]
+    df.loc[ii, C_TEMP_C] = np.nan
     
-#     ii = ~pd.isna(df.loc[:, C_TEMP_C]) & pd.isna(df.loc[:, C_TEMP_F])
-#     if provenance:
-#         provenance.record("Calculate Temp_F from Temp_C", row=df.loc[ii].index, col=C_TEMP_F, reference_col=C_TEMP_C)
-#     df.loc[ii, C_TEMP_F] = df.loc[ii, C_TEMP_C] * 1.8 + 32
-#     ii = ~pd.isna(df.loc[:, C_TEMP_F]) & pd.isna(df.loc[:, C_TEMP_C])
-#     if provenance:
-#         provenance.record("Calculate Temp_C from Temp_F", row=df.loc[ii].index, col=C_TEMP_C, reference_col=C_TEMP_F)
-#     df.loc[ii, C_TEMP_C] = (df.loc[ii, C_TEMP_F] - 32) / 1.8
-#     print('[DONE]')
+    ii = ~pd.isna(df.loc[:, C_TEMP_C]) & pd.isna(df.loc[:, C_TEMP_F])
+    if provenance:
+        provenance.record("Calculate Temp_F from Temp_C", row=df.loc[ii].index, col=C_TEMP_F, reference_col=C_TEMP_C)
+    df.loc[ii, C_TEMP_F] = df.loc[ii, C_TEMP_C] * 1.8 + 32
+    ii = ~pd.isna(df.loc[:, C_TEMP_F]) & pd.isna(df.loc[:, C_TEMP_C])
+    if provenance:
+        provenance.record("Calculate Temp_C from Temp_F", row=df.loc[ii].index, col=C_TEMP_C, reference_col=C_TEMP_F)
+    df.loc[ii, C_TEMP_C] = (df.loc[ii, C_TEMP_F] - 32) / 1.8
+    print('[DONE]')
 
-#     # Hb/Ht
-#     print('Hb/Ht ', end='')
-#     ii = ~pd.isna(df.loc[:, C_HB]) & pd.isna(df.loc[:, C_HT])
-#     if provenance:
-#         provenance.record("Calculate Ht from Hb", row=df.loc[ii].index, col=C_HT, reference_col=C_HB)
-#     df.loc[ii, C_HT] = (df.loc[ii, C_HB] * 2.862) + 1.216
-#     ii = ~pd.isna(df.loc[:, C_HT]) & pd.isna(df.loc[:, C_HB])
-#     if provenance:
-#         provenance.record("Calculate Hb from Ht", row=df.loc[ii].index, col=C_HB, reference_col=C_HT)
-#     df.loc[ii, C_HB] = (df.loc[ii, C_HT] - 1.216) / 2.862
-#     print('[DONE]')
+    # Hb/Ht
+    print('Hb/Ht ', end='')
+    ii = ~pd.isna(df.loc[:, C_HB]) & pd.isna(df.loc[:, C_HT])
+    if provenance:
+        provenance.record("Calculate Ht from Hb", row=df.loc[ii].index, col=C_HT, reference_col=C_HB)
+    df.loc[ii, C_HT] = (df.loc[ii, C_HB] * 2.862) + 1.216
+    ii = ~pd.isna(df.loc[:, C_HT]) & pd.isna(df.loc[:, C_HB])
+    if provenance:
+        provenance.record("Calculate Hb from Ht", row=df.loc[ii].index, col=C_HB, reference_col=C_HT)
+    df.loc[ii, C_HB] = (df.loc[ii, C_HT] - 1.216) / 2.862
+    print('[DONE]')
 
-#     # BILI
-#     print('BILI ', end='')
-#     ii = ~pd.isna(df.loc[:, C_TOTAL_BILI]) & pd.isna(df.loc[:, C_DIRECT_BILI])
-#     if provenance:
-#         provenance.record("Calculate direct bili from total bili", row=df.loc[ii].index, col=C_DIRECT_BILI, reference_col=C_TOTAL_BILI)
-#     df.loc[ii, C_DIRECT_BILI] = (df.loc[ii, C_TOTAL_BILI] * 0.6934) - 0.1752
-#     ii = ~pd.isna(df.loc[:, C_DIRECT_BILI]) & pd.isna(df.loc[:, C_TOTAL_BILI])
-#     if provenance:
-#         provenance.record("Calculate total bili from direct bili", row=df.loc[ii].index, col=C_TOTAL_BILI, reference_col=C_DIRECT_BILI)
-#     df.loc[ii, C_TOTAL_BILI] = (df.loc[ii, C_DIRECT_BILI] + 0.1752) / 0.6934
-#     print('[DONE]')
+    # BILI
+    print('BILI ', end='')
+    ii = ~pd.isna(df.loc[:, C_TOTAL_BILI]) & pd.isna(df.loc[:, C_DIRECT_BILI])
+    if provenance:
+        provenance.record("Calculate direct bili from total bili", row=df.loc[ii].index, col=C_DIRECT_BILI, reference_col=C_TOTAL_BILI)
+    df.loc[ii, C_DIRECT_BILI] = (df.loc[ii, C_TOTAL_BILI] * 0.6934) - 0.1752
+    ii = ~pd.isna(df.loc[:, C_DIRECT_BILI]) & pd.isna(df.loc[:, C_TOTAL_BILI])
+    if provenance:
+        provenance.record("Calculate total bili from direct bili", row=df.loc[ii].index, col=C_TOTAL_BILI, reference_col=C_DIRECT_BILI)
+    df.loc[ii, C_TOTAL_BILI] = (df.loc[ii, C_DIRECT_BILI] + 0.1752) / 0.6934
+    print('[DONE]')
     
-#     return df
+    return df
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=('Generates a preliminary CSV '
@@ -268,14 +268,14 @@ if __name__ == '__main__':
                         help='Directory in which raw and preprocessed data is stored (default is ../data/ directory)')
     parser.add_argument('--no-outliers', dest='outliers', default=True, action='store_false',
                         help="Don't replace outliers with NaNs")
-    # parser.add_argument('--no-fio2', dest='fio2', default=True, action='store_false',
-    #                     help="Don't estimate FiO2")
-    # parser.add_argument('--no-gcs', dest='gcs', default=True, action='store_false',
-    #                     help="Don't estimate GCS from RASS")
-    # parser.add_argument('--no-vitals', dest='vitals', default=True, action='store_false',
-    #                     help="Don't estimate vitals (e.g. temp, BP, Hb/Ht)")
-    # parser.add_argument('--no-sample-and-hold', dest='sample_and_hold', default=True, action='store_false',
-    #                     help="Don't fill in missing values with sample-and-hold")
+    parser.add_argument('--no-fio2', dest='fio2', default=True, action='store_false',
+                        help="Don't estimate FiO2")
+    parser.add_argument('--no-gcs', dest='gcs', default=True, action='store_false',
+                        help="Don't estimate GCS from RASS")
+    parser.add_argument('--no-vitals', dest='vitals', default=True, action='store_false',
+                        help="Don't estimate vitals (e.g. temp, BP, Hb/Ht)")
+    parser.add_argument('--no-sample-and-hold', dest='sample_and_hold', default=True, action='store_false',
+                        help="Don't fill in missing values with sample-and-hold")
     parser.add_argument('--mask-file', dest='mask_file', default=None, type=str,
                         help="Path to write a mask file indicating where values were changed (+1 if a value was added or changed, or -1 if a value was removed)")
     parser.add_argument('--provenance-dir', dest='provenance_dir', default=None, type=str,
@@ -297,41 +297,41 @@ if __name__ == '__main__':
         print("Remove outliers")
         df = remove_outliers(df, provenance=provenance)
 
-    # if args.fio2:
-    #     print("Estimate FiO2")
-    #     df = estimate_fio2(df, provenance=provenance)
+    if args.fio2:
+        print("Estimate FiO2")
+        df = estimate_fio2(df, provenance=provenance)
 
-    # if args.gcs:
-    #     print("Estimate GCS from RASS")
-    #     df[C_GCS] = df[C_GCS].astype("Float64")
-    #     ii = pd.isna(df[C_GCS])
-    #     if provenance:
-    #         provenance.record("Estimate GCS from RASS", row=df.loc[ii].index, col=C_GCS, reference_col=C_RASS)
-    #     df.loc[ii, C_GCS] = df.loc[ii, C_RASS].apply(estimate_gcs)
+    if args.gcs:
+        print("Estimate GCS from RASS")
+        df[C_GCS] = df[C_GCS].astype("Float64")
+        ii = pd.isna(df[C_GCS])
+        if provenance:
+            provenance.record("Estimate GCS from RASS", row=df.loc[ii].index, col=C_GCS, reference_col=C_RASS)
+        df.loc[ii, C_GCS] = df.loc[ii, C_RASS].apply(estimate_gcs)
 
-    # if args.vitals:    
-    #     print("Estimate vitals")
-    #     df = estimate_vitals(df, provenance=provenance)
+    if args.vitals:    
+        print("Estimate vitals")
+        df = estimate_vitals(df, provenance=provenance)
     
-    # if args.sample_and_hold:
-    #     print("Sample and hold")
-    #     sah_series = {
-    #         C_BLOC: df[C_BLOC],
-    #         C_ICUSTAYID: df[C_ICUSTAYID],
-    #         C_TIMESTEP: df[C_TIMESTEP]
-    #     }
-    #     for col in SAH_FIELD_NAMES:
-    #         print("SAH on " + col)
-    #         sah_series[col] = sample_and_hold(df[C_ICUSTAYID],
-    #                                           df[C_TIMESTEP],
-    #                                           df[col],
-    #                                           SAH_HOLD_DURATION[col],
-    #                                           provenance=provenance,
-    #                                           col_name=col)
-    #         print("Eliminated {:.1f}% of NA values".format((1 - pd.isna(sah_series[col]).sum() / pd.isna(df[col]).sum()) * 100))
+    if args.sample_and_hold:
+        print("Sample and hold")
+        sah_series = {
+            C_BLOC: df[C_BLOC],
+            C_ICUSTAYID: df[C_ICUSTAYID],
+            C_TIMESTEP: df[C_TIMESTEP]
+        }
+        for col in SAH_FIELD_NAMES:
+            print("SAH on " + col)
+            sah_series[col] = sample_and_hold(df[C_ICUSTAYID],
+                                              df[C_TIMESTEP],
+                                              df[col],
+                                              SAH_HOLD_DURATION[col],
+                                              provenance=provenance,
+                                              col_name=col)
+            print("Eliminated {:.1f}% of NA values".format((1 - pd.isna(sah_series[col]).sum() / pd.isna(df[col]).sum()) * 100))
 
-    #     df = pd.DataFrame(sah_series)
-    #     del sah_series
+        df = pd.DataFrame(sah_series)
+        del sah_series
 
     ID_COLS = [C_BLOC, C_ICUSTAYID, C_TIMESTEP]
 
