@@ -35,15 +35,15 @@ def compute_pao2_fio2(df):
     return df[C_PAO2] / df[C_FIO2_1]
         
 def compute_shock_index(df):
-    # recompute SHOCK INDEX without NAN and INF
-    result = df[C_SHOCK_INDEX]
+    # Shock Index = HR / SysBP
+    result = pd.Series(pd.NA, index=df.index, dtype="Float64")
+
     if C_HR in df.columns and C_SYSBP in df.columns:
         result = df[C_HR] / df[C_SYSBP]
-        
+
+    # remove inf (SysBP=0)
     result[np.isinf(result)] = pd.NA
-    d = np.nanmean(result)
-    print("Replacing shock index with average value", d)
-    result[pd.isna(result)] = d  # replace NaN with average value ~ 0.8
+
     return result
 
 def compute_sofa(df, timestep_resolution=4.0):
@@ -101,13 +101,39 @@ def compute_sofa(df, timestep_resolution=4.0):
     return ms1 + ms2 + ms3 + ms4 + ms5 + ms6
 
 def compute_sirs(df):
-    s = df[[C_TEMP_C, C_HR, C_RR, C_PACO2, C_WBC_COUNT]]
+    # SIRS criteria: 4 indicators (Temp, HR, RR/PaCO2, WBC)
+    c1 = pd.Series(pd.NA, index=df.index, dtype="Int64")  # Temp
+    c2 = pd.Series(pd.NA, index=df.index, dtype="Int64")  # HR
+    c3 = pd.Series(pd.NA, index=df.index, dtype="Int64")  # RR or PaCO2
+    c4 = pd.Series(pd.NA, index=df.index, dtype="Int64")  # WBC
 
-    s1 = (s[C_TEMP_C] >= 38) | (s[C_TEMP_C] <= 36)  # count of points for all criteria of SIRS
-    s2 = (s[C_HR] > 90)
-    s3 = (s[C_RR] >= 20) | (s[C_PACO2] <= 32)
-    s4 = (s[C_WBC_COUNT] >= 12) | (s[C_WBC_COUNT] < 4)
-    return s1.astype(int) + s2.astype(int) + s3.astype(int) + s4.astype(int)
+    # Temp
+    if C_TEMP_C in df.columns:
+        ok = df[C_TEMP_C].notna()
+        c1.loc[ok] = ((df.loc[ok, C_TEMP_C] >= 38) | (df.loc[ok, C_TEMP_C] <= 36)).astype("Int64")
+
+    # HR
+    if C_HR in df.columns:
+        ok = df[C_HR].notna()
+        c2.loc[ok] = (df.loc[ok, C_HR] > 90).astype("Int64")
+
+    # RR/PaCO2
+    rr = df[C_RR] if C_RR in df.columns else pd.Series(pd.NA, index=df.index, dtype="Float64")
+    paco2 = df[C_PACO2] if C_PACO2 in df.columns else pd.Series(pd.NA, index=df.index, dtype="Float64")
+    ok = rr.notna() | paco2.notna()
+    rr_cond = (rr >= 20)
+    paco2_cond = (paco2 <= 32)
+    rr_cond = rr_cond.fillna(False)
+    paco2_cond = paco2_cond.fillna(False)
+    c3.loc[ok] = (rr_cond.loc[ok] | paco2_cond.loc[ok]).astype("Int64")
+
+    # WBC
+    if C_WBC_COUNT in df.columns:
+        ok = df[C_WBC_COUNT].notna()
+        c4.loc[ok] = ((df.loc[ok, C_WBC_COUNT] >= 12) | (df.loc[ok, C_WBC_COUNT] < 4)).astype("Int64")
+
+    sirs = c1 + c2 + c3 + c4
+    return sirs
 
 def compute_sapsii(df):
     """ Calculate the SAPSII score provided the dataframe of raw patient features. """

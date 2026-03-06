@@ -290,53 +290,85 @@ def demog(elixhauser_table, mimiciii=False):
     return query.format(**kwargs)
 
 def fluid_mv(mimiciii=False):
-    """
-    Real-time fluid input from Metavision. From the original Komorowski data
-    extraction pipeline: 
-        * Records with no rate = STAT
-        * Records with rate = INFUSION
-        * fluids corrected for tonicity
-    """
+
     query = """
-        with t1 as
+        WITH t1 AS
         (
-            select
-                {stay_id_field} as icustay_id,
-                UNIX_SECONDS(TIMESTAMP(starttime)) as starttime,
-                UNIX_SECONDS(TIMESTAMP(endtime)) as endtime,
-                itemid, amount, rate,
-                case
-                    when itemid in (30176,30315) then amount *0.25
-                    when itemid in (30161) then amount *0.3
-                    when itemid in (30020,30015,225823,30321,30186,30211,30353,42742,42244,225159) then amount *0.5 --
-                    when itemid in (227531) then amount *2.75
-                    when itemid in (30143,225161) then amount *3
-                    when itemid in (30009,220862) then amount *5
-                    when itemid in (30030,220995,227533) then amount *6.66
-                    when itemid in (228341) then amount *8
-                    else amount end as tev -- total equivalent volume
-            from `{table}`
-            -- only real time items !!
-            where {stay_id_field} is not null and amount is not null and itemid in {items}
+            SELECT
+                {stay_id_field} AS icustay_id,
+                UNIX_SECONDS(TIMESTAMP(starttime)) AS starttime,
+                UNIX_SECONDS(TIMESTAMP(endtime)) AS endtime,
+                itemid,
+                amount,
+                rate,
+
+                CASE
+                    -- hypotonic fluids
+                    WHEN itemid = 225823 THEN amount * 0.5
+                    WHEN itemid = 225159 THEN amount * 0.5
+
+                    -- hypertonic saline
+                    WHEN itemid = 225161 THEN amount * 3
+
+                    -- mannitol
+                    WHEN itemid = 227531 THEN amount * 2.75
+
+                    -- bicarbonate
+                    WHEN itemid = 220995 THEN amount * 6.66
+                    WHEN itemid = 227533 THEN amount * 6.66
+
+                    -- albumin
+                    WHEN itemid = 220862 THEN amount * 5
+                    WHEN itemid = 220864 THEN amount * 1.0
+
+                    -- isotonic crystalloids
+                    WHEN itemid = 225158 THEN amount
+                    WHEN itemid = 225825 THEN amount
+                    WHEN itemid = 225827 THEN amount
+                    WHEN itemid = 225828 THEN amount
+                    WHEN itemid = 225941 THEN amount
+                    WHEN itemid = 225943 THEN amount
+                    WHEN itemid = 226089 THEN amount
+
+                    ELSE amount
+                END AS tev
+
+            FROM `{table}`
+
+            WHERE
+                {stay_id_field} IS NOT NULL
+                AND amount IS NOT NULL
+                AND itemid IN (
+                    225158,225159,225823,225825,225827,
+                    225828,225941,225943,226089,
+                    225161,227531,
+                    220995,227533,
+                    220862,220864
+                )
         )
-        select
+
+        SELECT
             icustay_id,
-            starttime, 
+            starttime,
             endtime,
-            itemid, 
-            round(cast(amount as numeric),3) as amount,
-            round(cast(rate as numeric),3) as rate,
-            round(cast(tev as numeric),3) as tev -- total equiv volume
-        from t1
-        order by icustay_id, starttime, itemid
+            itemid,
+            ROUND(CAST(amount AS NUMERIC),3) AS amount,
+            ROUND(CAST(rate AS NUMERIC),3) AS rate,
+            ROUND(CAST(tev AS NUMERIC),3) AS tev
+
+        FROM t1
+        ORDER BY icustay_id, starttime, itemid
     """
-    kwargs = {'items': repr(INPUTEVENT_CODES)}
+
+    kwargs = {}
+
     if mimiciii:
         kwargs['stay_id_field'] = 'icustay_id'
         kwargs['table'] = 'physionet-data.mimiciii_clinical.inputevents_mv'
     else:
         kwargs['stay_id_field'] = 'stay_id'
         kwargs['table'] = 'physionet-data.mimiciv_3_1_icu.inputevents'
+
     return query.format(**kwargs)
 
 def fluid_cv(mimiciii=False):
@@ -686,11 +718,14 @@ def onset_derived(mimiciii=False):
 
     return """
         SELECT
-        stay_id,
+        stay_id AS icustay_id,
         ANY_VALUE(subject_id) AS subject_id,
-        MIN(suspected_infection_time) AS sepsis_onset_time,
-        MIN(antibiotic_time) AS antibiotic_time,
-        MIN(culture_time) AS culture_time
+
+        UNIX_SECONDS(TIMESTAMP(MIN(suspected_infection_time))) AS onset_time,
+
+        UNIX_SECONDS(TIMESTAMP(MIN(antibiotic_time))) AS antibiotic_time,
+        UNIX_SECONDS(TIMESTAMP(MIN(culture_time))) AS culture_time
+
         FROM `physionet-data.mimiciv_3_1_derived.sepsis3`
         WHERE sepsis3 = TRUE
         AND stay_id IS NOT NULL
@@ -760,7 +795,6 @@ def bg_derived(mimiciii=False):
         SELECT
         stay_id AS icustay_id,
         UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
-        fio2,
         po2  AS pao2,
         pco2 AS paco2,
         ph,
@@ -784,6 +818,48 @@ def bg_derived(mimiciii=False):
         )
         WHERE rn = 1
         ORDER BY icustay_id, charttime;
+    """
+
+def fio2_derived(mimiciii=False):
+    if mimiciii:
+        return None
+
+    return """
+    WITH vent AS (
+    SELECT
+        stay_id AS icustay_id,
+        UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
+        CASE WHEN fio2 > 1 THEN fio2/100.0 ELSE fio2 END AS fio2
+    FROM `physionet-data.mimiciv_3_1_derived.ventilator_setting`
+    WHERE fio2 IS NOT NULL
+        AND charttime IS NOT NULL
+    ),
+    bg AS (
+      SELECT
+        i.stay_id AS icustay_id,
+        UNIX_SECONDS(TIMESTAMP(bg.charttime)) AS charttime,
+        CASE WHEN bg.fio2 > 1 THEN bg.fio2/100.0 ELSE bg.fio2 END AS fio2
+      FROM `physionet-data.mimiciv_3_1_derived.bg` bg
+      JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+        ON bg.subject_id = i.subject_id
+       AND bg.hadm_id   = i.hadm_id
+       AND bg.charttime BETWEEN i.intime AND i.outtime
+      WHERE bg.fio2 IS NOT NULL
+        AND bg.charttime IS NOT NULL
+    )
+    SELECT icustay_id, charttime, fio2
+    FROM vent
+
+    UNION ALL
+
+    SELECT b.icustay_id, b.charttime, b.fio2
+    FROM bg b
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM vent v
+      WHERE v.icustay_id = b.icustay_id AND v.charttime = b.charttime
+    )
+    ORDER BY icustay_id, charttime
     """
 
 def cbc_derived(mimiciii=False):
@@ -1024,6 +1100,7 @@ SQL_QUERY_FUNCTIONS = {
     "gcs_derived": gcs_derived,
     "vital_derived": vital_derived,
     "bg_derived": bg_derived,
+    "fio2_derived": fio2_derived,
     "cbc_derived": cbc_derived,
     "labs_derived": labs_derived,
     "ion_cal_derived": ion_cal_derived,
@@ -1033,4 +1110,5 @@ SQL_QUERY_FUNCTIONS = {
     "urine_derived": urine_derived,
     "mechvent_derived": mechvent_derived,
     "sofa_derived": sofa_derived,
+    "fluid_mv": fluid_mv,
 }
