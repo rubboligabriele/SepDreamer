@@ -100,10 +100,28 @@ MECHVENT_MEASUREMENT_CODES = (
 #     467, # O2 delivery device
 # ) + MECHVENT_MEASUREMENT_CODES
 
+# PREADM_FLUID_CODES = (
+#     30054,30055,30101,30102,30103,30104,30105,30108,226361,226363,226364,
+#     226365,226367,226368,226369,226370,226371,226372,226375,226376,227070,
+#     227071,227072
+# )
+
 PREADM_FLUID_CODES = (
-    30054,30055,30101,30102,30103,30104,30105,30108,226361,226363,226364,
-    226365,226367,226368,226369,226370,226371,226372,226375,226376,227070,
-    227071,227072
+    226361,  # Pre-Admission/Non-ICU Intake
+    226363,  # Cath Lab Intake
+    226364,  # OR Crystalloid Intake
+    226365,  # OR Colloid Intake
+    226367,  # OR FFP Intake
+    226368,  # OR Packed RBC Intake
+    226369,  # OR Platelet Intake
+    226370,  # OR Autologous Blood Intake
+    226371,  # OR Cryoprecipitate Intake
+    226372,  # OR Cell Saver Intake
+    226375,  # PACU Crystalloid Intake
+    226376,  # PACU Colloid Intake
+    227070,  # PACU Packed RBC Intake
+    227071,  # PACU Platelet Intake
+    227072   # PACU FFP Intake
 )
 
 UO_CODES = (
@@ -551,82 +569,95 @@ def microbio(mimiciii=False):
         kwargs['events'] = 'physionet-data.mimiciv_3_1_hosp.microbiologyevents'
     return query.format(**kwargs)
 
+# def preadm_fluid(mimiciii=False):
+#     """
+#     Pre-admission fluid intake, as measured from the
+#     physionet-data.mimic_icu.inputevents table.
+#     """
+#     if mimiciii:
+#         # We need to query both Metavision and CareVue
+#         query = """
+#             with mv as (
+#                 select ie.icustay_id, sum(ie.amount) as sum
+#                 from `physionet-data.mimiciii_clinical.inputevents_mv` ie, `physionet-data.mimiciii_clinical.d_items` ci
+#                 where ie.itemid=ci.itemid and ie.itemid in {codes}
+#                 group by icustay_id
+#             ), cv as (
+#                 select ie.icustay_id, sum(ie.amount) as sum
+#                 from `physionet-data.mimiciii_clinical.inputevents_cv` ie, `physionet-data.mimiciii_clinical.d_items` ci
+#                 where ie.itemid=ci.itemid and ie.itemid in {codes}
+#                 group by icustay_id
+#             )
+#             select pt.icustay_id,
+#                 case when mv.sum is not null then mv.sum
+#                 when cv.sum is not null then cv.sum
+#                 else null end as inputpreadm
+#             from `physionet-data.mimiciii_clinical.icustays` pt
+#             left outer join mv on mv.icustay_id=pt.icustay_id
+#             left outer join cv on cv.icustay_id=pt.icustay_id
+#             order by icustay_id
+#         """
+#     else:
+#         # Metavision only
+#         query = """
+#             with mv as
+#             (
+#                 select ie.stay_id as icustay_id, sum(ie.amount) as sum
+#                 from `physionet-data.mimiciv_3_1_icu.inputevents` ie, `physionet-data.mimiciv_3_1_icu.d_items` ci
+#                 where ie.itemid=ci.itemid and ie.itemid in {codes}
+#                 group by icustay_id
+#             )
+#             select pt.stay_id as icustay_id,
+#                 case when mv.sum is not null then mv.sum
+#                 else null end as inputpreadm
+#             from `physionet-data.mimiciv_3_1_icu.icustays` pt
+#             left outer join mv
+#             on mv.icustay_id=pt.stay_id
+#             order by icustay_id
+#         """
+#     kwargs = {'codes': repr(PREADM_FLUID_CODES)}
+#     return query.format(**kwargs)
+
 def preadm_fluid(mimiciii=False):
     """
-    Pre-admission fluid intake, as measured from the
-    physionet-data.mimic_icu.inputevents table.
+    Pre-admission fluid intake (fluids given before ICU admission).
     """
     if mimiciii:
-        # We need to query both Metavision and CareVue
-        query = """
-            with mv as (
-                select ie.icustay_id, sum(ie.amount) as sum
-                from `physionet-data.mimiciii_clinical.inputevents_mv` ie, `physionet-data.mimiciii_clinical.d_items` ci
-                where ie.itemid=ci.itemid and ie.itemid in {codes}
-                group by icustay_id
-            ), cv as (
-                select ie.icustay_id, sum(ie.amount) as sum
-                from `physionet-data.mimiciii_clinical.inputevents_cv` ie, `physionet-data.mimiciii_clinical.d_items` ci
-                where ie.itemid=ci.itemid and ie.itemid in {codes}
-                group by icustay_id
-            )
-            select pt.icustay_id,
-                case when mv.sum is not null then mv.sum
-                when cv.sum is not null then cv.sum
-                else null end as inputpreadm
-            from `physionet-data.mimiciii_clinical.icustays` pt
-            left outer join mv on mv.icustay_id=pt.icustay_id
-            left outer join cv on cv.icustay_id=pt.icustay_id
-            order by icustay_id
-        """
-    else:
-        # Metavision only
-        query = """
-            with mv as
-            (
-                select ie.stay_id as icustay_id, sum(ie.amount) as sum
-                from `physionet-data.mimiciv_3_1_icu.inputevents` ie, `physionet-data.mimiciv_3_1_icu.d_items` ci
-                where ie.itemid=ci.itemid and ie.itemid in {codes}
-                group by icustay_id
-            )
-            select pt.stay_id as icustay_id,
-                case when mv.sum is not null then mv.sum
-                else null end as inputpreadm
-            from `physionet-data.mimiciv_3_1_icu.icustays` pt
-            left outer join mv
-            on mv.icustay_id=pt.stay_id
-            order by icustay_id
-        """
-    kwargs = {'codes': repr(PREADM_FLUID_CODES)}
-    return query.format(**kwargs)
+        return None
+
+    query = """
+        SELECT
+            ie.stay_id AS icustay_id,
+            SUM(ie.amount) AS inputpreadm
+        FROM `physionet-data.mimiciv_3_1_icu.inputevents` ie
+        WHERE
+            ie.itemid IN {codes}
+            AND ie.amount IS NOT NULL
+            AND ie.stay_id IS NOT NULL
+        GROUP BY ie.stay_id
+        ORDER BY icustay_id
+    """
+
+    return query.format(codes=repr(PREADM_FLUID_CODES))
 
 def preadm_uo(mimiciii=False):
-    """
-    Pre-admission output events - information regarding patient outputs
-    including urine, drainage, and so on (MIMIC documentation). There is only
-    one item ID selected here, which is "Pre-Admission" (all lumped into one
-    value).
-    """
-    query = """
-        select distinct oe.{stay_id_field} as icustay_id,
-            UNIX_SECONDS(TIMESTAMP(oe.charttime)) as charttime,
+    return """
+        SELECT DISTINCT
+            oe.stay_id AS icustay_id,
+            UNIX_SECONDS(TIMESTAMP(oe.charttime)) AS charttime,
             oe.itemid,
             oe.value,
-            DATETIME_DIFF(ic.intime, oe.charttime, minute) as datediff_minutes
-        from `{events}` oe, `{stays}` ic
-        where oe.{stay_id_field}=ic.{stay_id_field} and itemid in (40060, 226633)	
-        order by icustay_id, charttime, itemid
+            TIMESTAMP_DIFF(
+                TIMESTAMP(oe.charttime),
+                TIMESTAMP(ic.intime),
+                MINUTE
+            ) AS datediff_minutes
+        FROM `physionet-data.mimiciv_3_1_icu.outputevents` oe
+        JOIN `physionet-data.mimiciv_3_1_icu.icustays` ic
+            ON oe.stay_id = ic.stay_id
+        WHERE oe.itemid = 226633
+        ORDER BY icustay_id, charttime, itemid
     """
-    kwargs = {}
-    if mimiciii:
-        kwargs['stay_id_field'] = 'icustay_id'
-        kwargs['stays'] = 'physionet-data.mimiciii_clinical.icustays'
-        kwargs['events'] = 'physionet-data.mimiciii_clinical.outputevents'
-    else:
-        kwargs['stay_id_field'] = 'stay_id'
-        kwargs['stays'] = 'physionet-data.mimiciv_3_1_icu.icustays'
-        kwargs['events'] = 'physionet-data.mimiciv_3_1_icu.outputevents'
-    return query.format(**kwargs)
 
 def uo(mimiciii=False):
     """
@@ -1111,4 +1142,6 @@ SQL_QUERY_FUNCTIONS = {
     "mechvent_derived": mechvent_derived,
     "sofa_derived": sofa_derived,
     "fluid_mv": fluid_mv,
+    "preadm_fluid": preadm_fluid,
+    "preadm_uo": preadm_uo,
 }

@@ -362,6 +362,19 @@ RAW_DATA_COLUMNS = {
         C_ENDTIME,
         C_SOFA
     ],
+
+    "preadm_fluid": [
+        C_ICUSTAYID,
+        C_INPUT_PREADM
+    ],
+
+    "preadm_uo": [
+        C_ICUSTAYID,
+        C_CHARTTIME,
+        C_ITEMID,
+        C_VALUE,
+        C_DATEDIFF_MINUTES
+    ],
 }
 
 

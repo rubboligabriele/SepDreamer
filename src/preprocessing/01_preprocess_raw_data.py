@@ -35,7 +35,9 @@ DEFAULT_FILES = [
     "urine_derived.csv",
     "mechvent_derived.csv",
     "sofa_derived.csv",
-    "fluid_mv.csv"
+    "fluid_mv.csv",
+    "preadm_fluid.csv",
+    "preadm_uo.csv",
 ]
 
 
