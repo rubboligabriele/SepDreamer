@@ -44,31 +44,22 @@ def _sum_fluid_interval_mv(fluid_df, t0, t1):
     return float(total)
 
 
-def _sum_fluid_interval_cv(fluid_df, t0, t1):
-    """
-    Fluid delivered in [t0, t1) from CareVue:
-    charttime-based boluses.
-    """
-    if fluid_df is None or len(fluid_df) == 0:
-        return 0.0
-
-    mask = (fluid_df[C_CHARTTIME] >= t0) & (fluid_df[C_CHARTTIME] <= t1)
-    if not mask.any():
-        return 0.0
-    return float(fluid_df.loc[mask, C_TEV].fillna(0).sum())
-
-
 def _sum_uo_interval(uo_df, t0, t1):
-    """
-    Urine output inside [t0, t1].
-    """
     if uo_df is None or len(uo_df) == 0:
         return 0.0
 
     mask = (uo_df[C_CHARTTIME] >= t0) & (uo_df[C_CHARTTIME] <= t1)
     if not mask.any():
         return 0.0
-    return float(uo_df.loc[mask, C_VALUE].fillna(0).sum())
+
+    # support both formats
+    if C_VALUE in uo_df.columns:
+        return float(uo_df.loc[mask, C_VALUE].fillna(0).sum())
+
+    if "output_total" in uo_df.columns:
+        return float(uo_df.loc[mask, "output_total"].fillna(0).sum())
+
+    raise ValueError("Urine output column not found")
 
 
 def _vaso_stats_interval(vaso_df, t0, t1):
@@ -224,7 +215,7 @@ def build_states_and_actions_irregular(
 
     result = pd.DataFrame(combined_data)
 
-    expected_columns = IO_FIELD_NAMES + COMPUTED_FIELD_NAMES
+    expected_columns = IO_FIELD_NAMES
     for col in expected_columns:
         if col not in result.columns:
             print(f"Adding empty column '{col}' (no data points)")
@@ -282,7 +273,7 @@ if __name__ == "__main__":
     inputMV = load_intermediate_or_raw_csv("fluid_mv.csv")
     vaso = load_intermediate_or_raw_csv("vaso_derived.csv")
     UOpreadm = load_intermediate_or_raw_csv("preadm_uo.csv")
-    UO = load_intermediate_or_raw_csv("uo.csv")
+    UO = load_intermediate_or_raw_csv("urine_derived.csv")
 
     if inputMV is not None and "icustay_id" in inputMV.columns:
         inputMV = inputMV.rename(columns={"icustay_id": C_ICUSTAYID})
