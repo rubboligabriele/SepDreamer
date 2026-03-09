@@ -1,59 +1,58 @@
 import torch
 import torch.nn as nn
-    
-class FeaturesLinear(nn.Module):
-    def __init__(self, input_dim, output_dim=1):
+
+
+class PerFeatureEmbedding(nn.Module):
+    def __init__(self, num_features, embed_dim):
         super().__init__()
-        self.linear = nn.Linear(input_dim, output_dim, bias=True)
+        self.weight = nn.Parameter(torch.randn(num_features, embed_dim) * 0.02)
+        self.bias = nn.Parameter(torch.zeros(num_features, embed_dim))
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, num_features)``
-        """
-        return self.linear(x)  # Linear term for each feature
+        # x: [B, D]
+        # output: [B, D, k]
+        return x.unsqueeze(-1) * self.weight.unsqueeze(0) + self.bias.unsqueeze(0)
 
 
 class FactorizationMachine(nn.Module):
-    def __init__(self, reduce_sum=True):
+    def __init__(self):
         super().__init__()
-        self.reduce_sum = reduce_sum
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, num_features, embed_dim)``
-        """
-        square_of_sum = torch.sum(x, dim=1) ** 2  # Sum features and square the result
-        sum_of_square = torch.sum(x ** 2, dim=1)  # Square each feature and sum
-        ix = square_of_sum - sum_of_square  # FM interaction term
-        if self.reduce_sum:
-            ix = torch.sum(ix, dim=1, keepdim=True)  # Optionally reduce to scalar
-        return 0.5 * ix
+        # x: [B, D, E]
+        square_of_sum = torch.sum(x, dim=1) ** 2      # [B, E]
+        sum_of_square = torch.sum(x ** 2, dim=1)      # [B, E]
+        return 0.5 * (square_of_sum - sum_of_square)  # [B, E]
 
 
-class FMEmbedding(nn.Module):
+class AFIEmbedding(nn.Module):
     def __init__(self, input_dim, embed_dim):
-        """
-        Parameters:
-        - input_dim: Number of input features (e.g., columns in tabular data).
-        - embed_dim: Dimension of embeddings for FM interactions.
-        """
         super().__init__()
-        self.indim = input_dim
+        self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.outdim = 2 * embed_dim
-        self.embedding = nn.Linear(self.indim, self.indim * self.embed_dim, bias=False)
-        self.linear = FeaturesLinear(self.indim)
-        self.fm = FactorizationMachine(reduce_sum=False)
+
+        # embeddings for observations and deltas
+        self.obs_embedding = PerFeatureEmbedding(input_dim, embed_dim)
+        self.delta_embedding = PerFeatureEmbedding(input_dim, embed_dim)
+
+        # produces a 2k linear term
+        self.linear = nn.Linear(input_dim, 2 * embed_dim)
+
+        self.fm = FactorizationMachine()
 
     def forward(self, x, delta):
-        x_embedding = self.embedding(x).reshape(-1, self.indim, self.embed_dim)  # Reshape to [B, d, k]
-        delta_embedding = self.embedding(delta).reshape(-1, self.indim, self.embed_dim)  # Reshape to [B, d, k]
-        embeddings = torch.cat((x_embedding, delta_embedding), dim=-1) # [B, d, 2k]
+        """
+        x:     [B, D]
+        delta: [B, D]
+        """
+        x_emb = self.obs_embedding(x)          # [B, D, k]
+        d_emb = self.delta_embedding(delta)    # [B, D, k]
 
-        # Linear component
-        linear_part = self.linear(x)
+        embeddings = torch.cat([x_emb, d_emb], dim=-1)   # [B, D, 2k]
 
-        # FM interaction component
-        fm_part = self.fm(embeddings)
+        linear_part = self.linear(x)           # [B, 2k]
+        fm_part = self.fm(embeddings)          # [B, 2k]
 
-        return torch.sigmoid(linear_part + fm_part).squeeze(1)
+        out = torch.sigmoid(linear_part + fm_part)   # [B, 2k]
+        return out
