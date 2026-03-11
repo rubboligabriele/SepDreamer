@@ -1,25 +1,24 @@
-import numpy as np
 import pandas as pd
-from scipy.interpolate import interp1d
+from typing import Any,  cast
 import os
 from src.preprocessing.columns import C_ICUSTAYID, DTYPE_SPEC, STAY_ID_OPTIONAL_DTYPE_SPEC
 
-def load_csv(*file_paths, null_icustayid=False, **kwargs):
+def load_csv(*file_paths: str, null_icustayid: bool = False, **kwargs: Any) -> pd.DataFrame:
     """
     Attempts to load a data CSV from the file paths given, and returns the first
     one whose file path exists.
     """
     for path in file_paths:
         if os.path.exists(path):
-            spec = DTYPE_SPEC
-            if null_icustayid:
-                spec = STAY_ID_OPTIONAL_DTYPE_SPEC
-            return pd.read_csv(path, dtype=spec, **kwargs)
+            spec = STAY_ID_OPTIONAL_DTYPE_SPEC if null_icustayid else DTYPE_SPEC
+            return pd.read_csv(path, dtype=cast(Any, spec), **kwargs)
     raise FileNotFoundError(", ".join(file_paths))
 
-def load_intermediate_or_raw_csv(data_dir, file_name):
-    return load_csv(os.path.join(data_dir, "intermediates", file_name),
-                     os.path.join(data_dir, "raw_data", file_name))
+def load_intermediate_or_raw_csv(data_dir: str, file_name: str) -> pd.DataFrame:
+    return load_csv(
+        os.path.join(data_dir, "intermediates", file_name),
+        os.path.join(data_dir, "raw_data", file_name),
+    )
 
 def reverse_readline(filename, buf_size=8192):
     """A generator that returns the lines of a file in reverse order"""

@@ -6,7 +6,7 @@ import argparse
 from src.preprocessing.provenance import ProvenanceWriter
 from src.preprocessing.columns import *
 from src.preprocessing.utils import load_csv
-from src.preprocessing.imputation import fill_outliers, fill_stepwise, sample_and_hold
+from src.preprocessing.imputation import fill_outliers
 from src.preprocessing.derived_features import compute_shock_index, compute_sirs
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -233,6 +233,7 @@ if __name__ == "__main__":
 
     # ---- diff mask file (optional)
     if args.mask_file:
+        assert old_df is not None
         print("Write diff mask file")
         mask_series = {C_BLOC: df[C_BLOC], C_ICUSTAYID: df[C_ICUSTAYID], C_TIMESTEP: df[C_TIMESTEP]}
         for col in set(old_df.columns) & set(df.columns):

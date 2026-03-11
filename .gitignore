@@ -17,8 +17,6 @@ wheels/
 
 # data files
 /data/
-/data_old/
-/physionet.org/
 
 # MacOS system files
 .DS_Store
