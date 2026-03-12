@@ -308,6 +308,12 @@ RAW_DATA_COLUMNS = {
         C_PAO2_FIO2
     ],
 
+    "fio2_derived": [
+        C_ICUSTAYID,
+        C_CHARTTIME,
+        C_FIO2_1
+    ],
+
     "cbc_derived": [
         C_ICUSTAYID, C_CHARTTIME,
         C_WBC_COUNT, C_HB, C_HT,
