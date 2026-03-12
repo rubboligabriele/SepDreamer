@@ -3,9 +3,9 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-import networks
+import src.meddreamer.models.networks as networks
 import src.meddreamer.utils.tools as tools
-from fm import FMEmbedding
+from src.meddreamer.models.afi import AFIEmbedding
 
 to_np = lambda x: x.detach().cpu().numpy()
 
@@ -35,7 +35,7 @@ class WorldModel(nn.Module):
         shapes = {"features": tuple((config.num_features,))}
         # shapes = {"features": tuple((config.num_features,)), "delta": tuple((1,))} #ablation: add delta to input
         if config.fm["use_fm"]:
-            self.encoder = FMEmbedding(config.num_features, config.fm["fm_units"])
+            self.encoder = AFIEmbedding(config.num_features, config.fm["fm_units"])
         else:
             self.encoder = networks.MultiEncoder(shapes, **config.encoder)
        
