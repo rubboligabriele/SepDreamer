@@ -124,37 +124,95 @@ def remove_outliers(df, provenance=None):
 
 def compute_mask_delta(df, feature_cols, id_cols):
     """
-    Opzione B: mask/delta sul df FINALE (dopo cleaning + derived features),
-    così mask==1 <=> valore non-NaN che il modello vede.
+    Compute MedDreamer-style mask and delta.
+
+    Rules:
+
+    STATIC FEATURES (patient context variables)
+        - mask = 1 at all timesteps
+        - delta = 0 at all timesteps
+
+    DYNAMIC FEATURES (time-varying clinical variables)
+        - mask[t, d] = 1 if observed at timestep t, else 0
+
+        AFI delta definition:
+            delta[t, d] =
+                0                                   if t == 0
+                timestep[t] - timestep[t-1]         if mask[t-1, d] == 1
+                timestep[t] - timestep[t-1] + delta[t-1, d]
+                                                    if mask[t-1, d] == 0
     """
+
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
 
+    # ---- define static feature set (only keep those present in dataset)
+    static_cols = [
+        C_AGE,
+        C_GENDER,
+        C_ELIXHAUSER,
+        "readmission",
+    ]
+    static_cols = [c for c in static_cols if c in feature_cols]
+
+    dynamic_cols = [c for c in feature_cols if c not in static_cols]
+
+    # --------------------------------------------------
+    # BUILD MASK
+    # --------------------------------------------------
+
     mask_df = df[id_cols].copy()
-    mask_df[feature_cols] = (~df[feature_cols].isna()).astype(np.float32)
+
+    # dynamic features: observed <=> non-NaN
+    if dynamic_cols:
+        mask_df[dynamic_cols] = (~df[dynamic_cols].isna()).astype(np.float32)
+
+    # static features: always observed
+    if static_cols:
+        mask_df[static_cols] = 1.0
+
+    # --------------------------------------------------
+    # BUILD DELTA
+    # --------------------------------------------------
 
     delta_df = df[id_cols].copy()
     delta_vals = np.zeros((len(df), len(feature_cols)), dtype=np.float32)
 
+    feature_to_idx = {c: i for i, c in enumerate(feature_cols)}
+    dyn_idx = [feature_to_idx[c] for c in dynamic_cols]
+    stat_idx = [feature_to_idx[c] for c in static_cols]
+
     for _, g in df.groupby(C_ICUSTAYID, sort=False):
+
         idx = g.index.to_numpy()
-        t = g[C_TIMESTEP].to_numpy().astype(np.float64)
+        t = g[C_TIMESTEP].to_numpy(dtype=np.float64)
 
-        dt = np.zeros_like(t)
-        dt[1:] = t[1:] - t[:-1]
-        dt = np.clip(dt, a_min=0, a_max=None)
+        d = np.zeros((len(idx), len(feature_cols)), dtype=np.float64)
 
-        m = mask_df.loc[idx, feature_cols].to_numpy().astype(np.float32)
+        # ---- static features: delta always zero
+        if stat_idx:
+            d[:, stat_idx] = 0.0
 
-        acc = np.zeros((len(feature_cols),), dtype=np.float64)
-        for k in range(len(idx)):
-            if k == 0:
-                acc[:] = 0.0
-            else:
-                acc += dt[k]
-            acc[m[k] == 1.0] = 0.0
-            delta_vals[idx[k], :] = acc.astype(np.float32)
+        # ---- dynamic features: AFI accumulation
+        if dyn_idx:
+
+            m_dyn = mask_df.loc[idx, dynamic_cols].to_numpy(dtype=np.float32)
+
+            # first timestep already zero
+
+            for k in range(1, len(idx)):
+
+                dt = max(0.0, t[k] - t[k - 1])
+
+                d[k, dyn_idx] = np.where(
+                    m_dyn[k - 1, :] == 1.0,
+                    dt,
+                    dt + d[k - 1, dyn_idx]
+                )
+
+        delta_vals[idx, :] = d.astype(np.float32)
 
     delta_df[feature_cols] = delta_vals
+
     return mask_df, delta_df
 
 
