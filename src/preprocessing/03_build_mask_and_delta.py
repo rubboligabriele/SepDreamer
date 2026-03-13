@@ -145,7 +145,7 @@ def compute_mask_delta(df, feature_cols, id_cols):
 
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
 
-    # ---- define static feature set (only keep those present in dataset)
+    # Keep static features only if they are present in the dataset
     static_cols = [
         C_AGE,
         C_GENDER,
@@ -162,13 +162,14 @@ def compute_mask_delta(df, feature_cols, id_cols):
 
     mask_df = df[id_cols].copy()
 
-    # dynamic features: observed <=> non-NaN
     if dynamic_cols:
         mask_df[dynamic_cols] = (~df[dynamic_cols].isna()).astype(np.float32)
 
-    # static features: always observed
     if static_cols:
         mask_df[static_cols] = 1.0
+
+    # Force the same column order as patient_states_clean
+    mask_df = mask_df[id_cols + feature_cols]
 
     # --------------------------------------------------
     # BUILD DELTA
@@ -182,25 +183,20 @@ def compute_mask_delta(df, feature_cols, id_cols):
     stat_idx = [feature_to_idx[c] for c in static_cols]
 
     for _, g in df.groupby(C_ICUSTAYID, sort=False):
-
         idx = g.index.to_numpy()
         t = g[C_TIMESTEP].to_numpy(dtype=np.float64)
 
         d = np.zeros((len(idx), len(feature_cols)), dtype=np.float64)
 
-        # ---- static features: delta always zero
+        # Static features: delta always zero
         if stat_idx:
             d[:, stat_idx] = 0.0
 
-        # ---- dynamic features: AFI accumulation
+        # Dynamic features: AFI accumulation rule
         if dyn_idx:
-
             m_dyn = mask_df.loc[idx, dynamic_cols].to_numpy(dtype=np.float32)
 
-            # first timestep already zero
-
             for k in range(1, len(idx)):
-
                 dt = max(0.0, t[k] - t[k - 1])
 
                 d[k, dyn_idx] = np.where(
@@ -212,6 +208,9 @@ def compute_mask_delta(df, feature_cols, id_cols):
         delta_vals[idx, :] = d.astype(np.float32)
 
     delta_df[feature_cols] = delta_vals
+
+    # Force the same column order as patient_states_clean
+    delta_df = delta_df[id_cols + feature_cols]
 
     return mask_df, delta_df
 
