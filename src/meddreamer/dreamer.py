@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm import trange
 from tqdm import tqdm
 
-import models
+import src.meddreamer.models as models
 import src.meddreamer.utils.tools as tools
 
 import torch
