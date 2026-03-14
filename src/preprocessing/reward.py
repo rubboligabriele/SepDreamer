@@ -42,27 +42,34 @@ def compute_intermediate_reward(
     c0=DEFAULT_C0,
     c1=DEFAULT_C1,
     c2=DEFAULT_C2,
-    missing_strategy=None,
 ):
-    """
-    Compute the intermediate reward between two consecutive timesteps.
+    reward = 0.0
+    has_signal = False
 
-    Missing values are intentionally not resolved yet.
-    For now:
-    - if any required value is missing, return np.nan
-    - missing_strategy is reserved for future implementations
-    """
-    values = [sofa_t, sofa_tp1, lactate_t, lactate_tp1]
-    if any(pd.isna(v) for v in values):
-        if missing_strategy is None:
-            return np.nan
-        raise NotImplementedError(
-            f"Missing strategy '{missing_strategy}' is not implemented yet."
+    # ---- SOFA term ----
+    if not (pd.isna(sofa_t) or pd.isna(sofa_tp1)):
+        reward += compute_sofa_term(
+            sofa_t,
+            sofa_tp1,
+            c0=c0,
+            c1=c1,
         )
+        has_signal = True
 
-    sofa_term = compute_sofa_term(sofa_t, sofa_tp1, c0=c0, c1=c1)
-    lactate_term = compute_lactate_term(lactate_t, lactate_tp1, c2=c2)
-    return float(sofa_term + lactate_term)
+    # ---- Lactate term ----
+    if not (pd.isna(lactate_t) or pd.isna(lactate_tp1)):
+        reward += compute_lactate_term(
+            lactate_t,
+            lactate_tp1,
+            c2=c2,
+        )
+        has_signal = True
+
+    # ---- If nothing observed ----
+    if not has_signal:
+        return 0.0
+
+    return float(reward)
 
 
 def compute_terminal_reward(died, r_terminal=DEFAULT_R_TERMINAL):
@@ -88,7 +95,6 @@ def compute_transition_reward(
     c1=DEFAULT_C1,
     c2=DEFAULT_C2,
     r_terminal=DEFAULT_R_TERMINAL,
-    missing_strategy=None,
 ):
     """
     Compute reward for one transition.
@@ -101,11 +107,7 @@ def compute_transition_reward(
     """
     if is_terminal:
         if pd.isna(row_t[outcome_col]):
-            if missing_strategy is None:
-                return np.nan
-            raise NotImplementedError(
-                f"Missing strategy '{missing_strategy}' is not implemented yet."
-            )
+            raise ValueError("Missing terminal outcome")
         died = bool(row_t[outcome_col])
         return compute_terminal_reward(died=died, r_terminal=r_terminal)
 
@@ -120,7 +122,6 @@ def compute_transition_reward(
         c0=c0,
         c1=c1,
         c2=c2,
-        missing_strategy=missing_strategy,
     )
 
 
@@ -134,7 +135,6 @@ def add_reward_to_dataframe(
     c1=DEFAULT_C1,
     c2=DEFAULT_C2,
     r_terminal=DEFAULT_R_TERMINAL,
-    missing_strategy=None,
 ):
     """
     Add a reward column to a dataframe.
@@ -145,7 +145,7 @@ def add_reward_to_dataframe(
     - terminal reward is assigned to the last row of each ICU stay
     """
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).copy()
-    rewards = np.full(len(df), np.nan, dtype=np.float32)
+    rewards = np.zeros(len(df), dtype=np.float32)
 
     for _, g in df.groupby(C_ICUSTAYID, sort=False):
         idx = g.index.to_list()
@@ -161,7 +161,6 @@ def add_reward_to_dataframe(
                 c1=c1,
                 c2=c2,
                 r_terminal=r_terminal,
-                missing_strategy=missing_strategy,
             )
             continue
 
@@ -179,7 +178,6 @@ def add_reward_to_dataframe(
                 c1=c1,
                 c2=c2,
                 r_terminal=r_terminal,
-                missing_strategy=missing_strategy,
             )
 
         last_i = idx[-1]
@@ -193,7 +191,6 @@ def add_reward_to_dataframe(
             c1=c1,
             c2=c2,
             r_terminal=r_terminal,
-            missing_strategy=missing_strategy,
         )
 
     df[reward_col] = rewards

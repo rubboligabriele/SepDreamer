@@ -174,11 +174,13 @@ def main():
         c1=args.c1,
         c2=args.c2,
         r_terminal=args.r_terminal,
-        missing_strategy=None,   # leave NaN for now if required values are missing
     )
 
     n_nan = int(df[args.reward_col].isna().sum())
-    print(f"Reward computation finished. NaN rewards: {n_nan}")
+    if n_nan > 0:
+        print(f"WARNING: found {n_nan} NaN rewards")
+    else:
+        print("Reward computation finished. No NaN rewards.")
 
     print("Writing output...")
     df.to_csv(args.output, index=False, float_format="%g")
