@@ -1,7 +1,5 @@
 import os
 import argparse
-import numpy as np
-import pandas as pd
 
 from src.preprocessing.columns import *
 from src.preprocessing.utils import load_csv
