@@ -181,7 +181,7 @@ def main():
         print("Reward computation finished. No NaN rewards.")
 
     print("Writing output...")
-    df.to_csv(args.output, index=False, float_format="%g")
+    df.to_csv(args.output, index=False, sep=";", float_format="%.6f")
 
     print("Done.")
 
