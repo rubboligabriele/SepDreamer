@@ -52,12 +52,8 @@ def _sum_uo_interval(uo_df, t0, t1):
     if not mask.any():
         return 0.0
 
-    # support both formats
-    if C_VALUE in uo_df.columns:
-        return float(uo_df.loc[mask, C_VALUE].fillna(0).sum())
-
-    if "output_total" in uo_df.columns:
-        return float(uo_df.loc[mask, "output_total"].fillna(0).sum())
+    if C_URINE_OUTPUT in uo_df.columns:
+        return float(uo_df.loc[mask, C_URINE_OUTPUT].fillna(0).sum())
 
     raise ValueError("Urine output column not found")
 
