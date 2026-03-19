@@ -165,6 +165,9 @@ def fit_action_bins(
     input_amounts = np.asarray(input_amounts, dtype=np.float32)
     vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
 
+    input_amounts = np.clip(input_amounts, 0.0, None)
+    vaso_doses = np.clip(vaso_doses, 0.0, None)
+
     bin_percentiles = np.linspace(0, 100, n_action_bins - 1, endpoint=False)
 
     pos_inputs = input_amounts[input_amounts > 0]
@@ -193,9 +196,7 @@ def fit_action_bins(
     ]
 
     actions = (io - 1) * n_action_bins + (vc - 1)
-    actions = actions.astype(np.int64)
-
-    return actions, (median_inputs, median_vaso), (input_cutoffs, vaso_cutoffs)
+    return actions.astype(np.int64), (median_inputs, median_vaso), (input_cutoffs, vaso_cutoffs)
 
 
 def transform_actions(
@@ -204,8 +205,12 @@ def transform_actions(
     cutoffs: Tuple[List[float], List[float]],
 ) -> np.ndarray:
     input_cutoffs, vaso_cutoffs = cutoffs
+
     input_amounts = np.asarray(input_amounts, dtype=np.float32)
     vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
+
+    input_amounts = np.clip(input_amounts, 0.0, None)
+    vaso_doses = np.clip(vaso_doses, 0.0, None)
 
     action_ids = (
         len(input_cutoffs) * (np.digitize(input_amounts, input_cutoffs) - 1)
