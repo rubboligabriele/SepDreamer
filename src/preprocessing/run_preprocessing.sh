@@ -11,7 +11,6 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-
 run_step () {
     STEP_NUM=$1
     if [ "$FROM_STEP" -le "$STEP_NUM" ]; then
@@ -20,7 +19,6 @@ run_step () {
         return 1
     fi
 }
-
 
 if run_step 1; then
 echo "=============================="
@@ -32,7 +30,6 @@ python -m src.preprocessing.01_preprocess_raw_data \
     --out data/intermediates
 fi
 
-
 if run_step 2; then
 echo "=============================="
 echo "STEP 2 — build patient states"
@@ -42,7 +39,6 @@ python -m src.preprocessing.02_build_patient_states \
     data/intermediates/patient_states \
     --data data
 fi
-
 
 if run_step 3; then
 echo "=============================="
@@ -56,7 +52,6 @@ python -m src.preprocessing.03_build_mask_and_delta \
     --delta-out data/intermediates/patient_states/delta.csv
 fi
 
-
 if run_step 4; then
 echo "=============================="
 echo "STEP 4 — build states and actions"
@@ -66,7 +61,6 @@ python -m src.preprocessing.04_build_states_and_actions \
     data/intermediates/patient_states/patient_states_clean.csv \
     data/intermediates/patient_states/actions.csv
 fi
-
 
 if run_step 5; then
 echo "=============================="
@@ -83,7 +77,6 @@ python -m src.preprocessing.05_build_sepsis_cohort \
     --output-dir data/final_cohort
 fi
 
-
 if run_step 6; then
 echo "=============================="
 echo "STEP 6 — build reward"
@@ -95,6 +88,19 @@ python -m src.preprocessing.06_build_reward \
     --outcome-file data/final_cohort/sepsis_cohort.csv
 fi
 
+if run_step 7; then
+echo "=============================="
+echo "STEP 7 — build MedDreamer episodes"
+echo "=============================="
+
+python -m src.preprocessing.07_build_meddreamer_episodes \
+    --states data/final_cohort/patient_states_with_reward.csv \
+    --actions data/final_cohort/actions_filtered.csv \
+    --mask data/final_cohort/mask_filtered.csv \
+    --delta data/final_cohort/delta_filtered.csv \
+    --cohort data/final_cohort/sepsis_cohort.csv \
+    --output data/meddreamer_dataset
+fi
 
 echo "=============================="
 echo "PREPROCESSING PIPELINE DONE"
