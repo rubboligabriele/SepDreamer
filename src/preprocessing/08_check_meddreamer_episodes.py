@@ -60,6 +60,9 @@ def check_episode(ep: dict, expected_num_actions: int | None = None) -> list[str
     if ep["mask"].ndim != 2:
         errors.append(f"mask ndim is {ep['mask'].ndim}, expected 2")
 
+    if not np.all((ep["mask"] == 0.0) | (ep["mask"] == 1.0)):
+        errors.append("mask is not binary (contains values different from 0/1)")
+
     if ep["delta"].ndim != 2:
         errors.append(f"delta ndim is {ep['delta'].ndim}, expected 2")
 
@@ -91,6 +94,9 @@ def check_episode(ep: dict, expected_num_actions: int | None = None) -> list[str
 
         if ep["discount"][-1] != 0:
             errors.append("last discount is not 0")
+
+        if not np.all(ep["discount"][:-1] == 1):
+            errors.append("all discount values except the last should be 1")
 
         if not np.all(np.diff(ep["timestep"]) >= 0):
             errors.append("timesteps are not sorted non-decreasingly")
