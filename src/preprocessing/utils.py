@@ -1,7 +1,10 @@
+import pickle
+
 import pandas as pd
 from typing import Any,  cast
 import os
-from src.preprocessing.columns import C_ICUSTAYID, DTYPE_SPEC, STAY_ID_OPTIONAL_DTYPE_SPEC
+from src.preprocessing.columns import *
+from typing import List, Optional
 
 def load_csv(*file_paths: str, null_icustayid: bool = False, **kwargs: Any) -> pd.DataFrame:
     """
@@ -51,3 +54,98 @@ def reverse_readline(filename, buf_size=8192):
         # Don't yield None if the file was empty
         if segment is not None:
             yield segment
+
+def save_pickle(path: str, obj):
+    with open(path, "wb") as f:
+        pickle.dump(obj, f)
+
+
+def ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def build_is_first(length: int) -> np.ndarray:
+    arr = np.zeros(length, dtype=np.float32)
+    if length > 0:
+        arr[0] = 1.0
+    return arr
+
+
+def build_is_terminal(length: int) -> np.ndarray:
+    arr = np.zeros(length, dtype=np.float32)
+    if length > 0:
+        arr[-1] = 1.0
+    return arr
+
+
+def build_discount_sequence(length: int) -> np.ndarray:
+    arr = np.ones(length, dtype=np.float32)
+    if length > 0:
+        arr[-1] = 0.0
+    return arr
+
+
+def parse_column_list(arg_value: Optional[str]) -> Optional[List[str]]:
+    if arg_value is None:
+        return None
+    cols = [x.strip() for x in arg_value.split(",") if x.strip()]
+    return cols if cols else None
+
+
+def validate_columns_exist(df: pd.DataFrame, cols: List[str], group_name: str):
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing {group_name} columns: {missing}")
+
+
+def infer_default_action_columns(df: pd.DataFrame) -> List[str]:
+    candidates = [C_INPUT_STEP, C_MAX_DOSE_VASO]
+    cols = [c for c in candidates if c in df.columns]
+    if not cols:
+        raise ValueError(
+            "No default action columns found in actions file. "
+            "Pass --action-cols explicitly."
+        )
+    return cols
+
+
+def check_unique_keys(df: pd.DataFrame, df_name: str):
+    required = [C_ICUSTAYID, C_TIMESTEP]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"{df_name} is missing required key columns: {missing}")
+
+    dup_count = df.duplicated(subset=[C_ICUSTAYID, C_TIMESTEP]).sum()
+    if dup_count > 0:
+        raise ValueError(
+            f"{df_name} has {int(dup_count)} duplicated rows on "
+            f"({C_ICUSTAYID}, {C_TIMESTEP})"
+        )
+
+
+def sort_by_keys(df: pd.DataFrame) -> pd.DataFrame:
+    return df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
+
+
+def get_mask_feature_cols(mask_df: pd.DataFrame, feature_cols: List[str]) -> List[str]:
+    mask_cols = [c for c in feature_cols if c in mask_df.columns]
+    missing = [c for c in feature_cols if c not in mask_df.columns]
+    if missing:
+        raise ValueError(
+            f"mask file is missing feature columns: {missing}"
+        )
+    return mask_cols
+
+
+def get_delta_feature_cols(delta_df: pd.DataFrame, feature_cols: List[str]) -> List[str]:
+    delta_cols = [c for c in feature_cols if c in delta_df.columns]
+    missing = [c for c in feature_cols if c not in delta_df.columns]
+    if missing:
+        raise ValueError(
+            f"delta file is missing feature columns: {missing}"
+        )
+    return delta_cols
+
+
+def filter_by_stays(df: pd.DataFrame, stay_ids: np.ndarray) -> pd.DataFrame:
+    return df[df[C_ICUSTAYID].isin(stay_ids)].copy()
