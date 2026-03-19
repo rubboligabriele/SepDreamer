@@ -326,13 +326,25 @@ def main():
     )
 
     print("Fitting action bins on all cohort actions ...")
+
+    print("Fitting action bins on all cohort actions ...")
+
+    print("action_cols =", action_cols)
+    print(actions_df[action_cols].describe())
+
+    print("min input_step =", actions_df[action_cols[0]].min())
+    print("min max_dose_vaso =", actions_df[action_cols[1]].min())
+
+    print("negative input_step rows =", (actions_df[action_cols[0]] < 0).sum())
+    print("negative max_dose_vaso rows =", (actions_df[action_cols[1]] < 0).sum())
+
     all_action_ids, action_medians, action_cutoffs = fit_action_bins(
         actions_df[action_cols[0]].astype(np.float32).fillna(0.0).values,
         actions_df[action_cols[1]].astype(np.float32).fillna(0.0).values,
         n_action_bins=args.num_action_bins,
     )
     print(f"Total discrete actions: {num_actions}")
-    print(f"Unique action ids found: {sorted(np.unique(all_action_ids).tolist())[:10]} ...")
+    print(f"Unique action ids found: {sorted(np.unique(all_action_ids).tolist())}")
 
     normer_path = os.path.join(dataset_dir, "normalization.pkl")
     normer.save(normer_path)
