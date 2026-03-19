@@ -123,7 +123,7 @@ p1-sepsis:
   imag_time: 5
   task: 'sepsis'
   dataset: 'mimic'
-  reward_key: 'ori_reward'
+  reward_key: 'reward'
   num_features: 40
   num_actions: 25
   train_batch_length: 50
