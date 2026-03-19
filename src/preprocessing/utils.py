@@ -1,7 +1,7 @@
 import pickle
 
 import pandas as pd
-from typing import Any,  cast
+from typing import Any, Tuple,  cast
 import os
 from src.preprocessing.columns import *
 from typing import List, Optional
@@ -149,3 +149,77 @@ def get_delta_feature_cols(delta_df: pd.DataFrame, feature_cols: List[str]) -> L
 
 def filter_by_stays(df: pd.DataFrame, stay_ids: np.ndarray) -> pd.DataFrame:
     return df[df[C_ICUSTAYID].isin(stay_ids)].copy()
+
+def fit_action_bins(
+    input_amounts: np.ndarray,
+    vaso_doses: np.ndarray,
+    n_action_bins: int = 5,
+) -> Tuple[np.ndarray, Tuple[List[float], List[float]], Tuple[List[float], List[float]]]:
+    """
+    Discretize continuous fluids and vasopressors into a 5x5 grid by quantiles.
+    Returns:
+      - discrete action ids in [0, n_action_bins*n_action_bins - 1]
+      - medians for each fluid/vaso bin
+      - cutoffs for fluids/vaso
+    """
+    input_amounts = np.asarray(input_amounts, dtype=np.float32)
+    vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
+
+    bin_percentiles = np.linspace(0, 100, n_action_bins - 1, endpoint=False)
+
+    pos_inputs = input_amounts[input_amounts > 0]
+    pos_vaso = vaso_doses[vaso_doses > 0]
+
+    if len(pos_inputs) == 0:
+        input_cutoffs = [0.0] * n_action_bins
+    else:
+        input_cutoffs = [0.0] + np.percentile(pos_inputs, bin_percentiles).tolist()
+
+    if len(pos_vaso) == 0:
+        vaso_cutoffs = [0.0] * n_action_bins
+    else:
+        vaso_cutoffs = [0.0] + np.percentile(pos_vaso, bin_percentiles).tolist()
+
+    io = np.digitize(input_amounts, input_cutoffs)
+    vc = np.digitize(vaso_doses, vaso_cutoffs)
+
+    median_inputs = [
+        float(np.median(input_amounts[io == bin_num])) if np.any(io == bin_num) else 0.0
+        for bin_num in range(1, n_action_bins + 1)
+    ]
+    median_vaso = [
+        float(np.median(vaso_doses[vc == bin_num])) if np.any(vc == bin_num) else 0.0
+        for bin_num in range(1, n_action_bins + 1)
+    ]
+
+    actions = (io - 1) * n_action_bins + (vc - 1)
+    actions = actions.astype(np.int64)
+
+    return actions, (median_inputs, median_vaso), (input_cutoffs, vaso_cutoffs)
+
+
+def transform_actions(
+    input_amounts: np.ndarray,
+    vaso_doses: np.ndarray,
+    cutoffs: Tuple[List[float], List[float]],
+) -> np.ndarray:
+    input_cutoffs, vaso_cutoffs = cutoffs
+    input_amounts = np.asarray(input_amounts, dtype=np.float32)
+    vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
+
+    action_ids = (
+        len(input_cutoffs) * (np.digitize(input_amounts, input_cutoffs) - 1)
+        + (np.digitize(vaso_doses, vaso_cutoffs) - 1)
+    )
+    return action_ids.astype(np.int64)
+
+
+def one_hot_actions(action_ids: np.ndarray, num_actions: int) -> np.ndarray:
+    action_ids = np.asarray(action_ids, dtype=np.int64)
+    out = np.zeros((len(action_ids), num_actions), dtype=np.float32)
+    out[np.arange(len(action_ids)), action_ids] = 1.0
+    return out
+
+
+def save_npz(path: str, data: dict):
+    np.savez_compressed(path, **data)
