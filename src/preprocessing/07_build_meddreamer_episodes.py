@@ -130,8 +130,28 @@ def prepare_episode_for_stay(
         )
 
     features = stay_states_norm[feature_cols].astype(np.float32).values
-    mask = stay_mask[mask_cols].astype(np.float32).fillna(0.0).values
-    delta = stay_delta[delta_cols].astype(np.float32).fillna(0.0).values
+
+    mask_base = stay_mask[mask_cols].astype(np.float32).fillna(0.0).values
+    delta_base = stay_delta[delta_cols].astype(np.float32).fillna(0.0).values
+
+    if C_BLOC in feature_cols:
+        bloc_mask = np.ones((len(state_ts), 1), dtype=np.float32)
+        bloc_delta = np.zeros((len(state_ts), 1), dtype=np.float32)
+
+        insert_idx = feature_cols.index(C_BLOC)
+
+        mask = np.concatenate(
+            [mask_base[:, :insert_idx], bloc_mask, mask_base[:, insert_idx:]],
+            axis=1,
+        )
+        delta = np.concatenate(
+            [delta_base[:, :insert_idx], bloc_delta, delta_base[:, insert_idx:]],
+            axis=1,
+        )
+    else:
+        mask = mask_base
+        delta = delta_base
+
     reward = stay_states_raw[reward_col].astype(np.float32).fillna(0.0).values
     timesteps = stay_states_raw[C_TIMESTEP].astype(np.float32).values
 
@@ -293,8 +313,10 @@ def main():
     if len(action_cols) != 2:
         raise ValueError("For sepsis, action-cols must contain exactly 2 columns: fluids and vasopressor.")
 
-    mask_cols = get_mask_feature_cols(mask_df, feature_cols)
-    delta_cols = get_delta_feature_cols(delta_df, feature_cols)
+    feature_cols_no_bloc = [c for c in feature_cols if c != C_BLOC]
+
+    mask_cols = get_mask_feature_cols(mask_df, feature_cols_no_bloc)
+    delta_cols = get_delta_feature_cols(delta_df, feature_cols_no_bloc)
 
     print("Feature columns:")
     print(feature_cols)
