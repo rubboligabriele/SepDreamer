@@ -92,27 +92,28 @@ class RSSM(nn.Module):
 
         if self._initial == "learned":
             self.W = torch.nn.Parameter(
-                torch.zeros((1, self._deter), device=torch.device(self._device)),
+                torch.zeros((1, self._deter)),
                 requires_grad=True,
             )
 
     def initial(self, batch_size):
-        deter = torch.zeros(batch_size, self._deter, device=self._device)
+        device = next(self.parameters()).device
+        deter = torch.zeros(batch_size, self._deter, device=device)
         if self._discrete:
             state = dict(
                 logit=torch.zeros(
-                    [batch_size, self._stoch, self._discrete], device=self._device
+                    [batch_size, self._stoch, self._discrete], device=device
                 ),
                 stoch=torch.zeros(
-                    [batch_size, self._stoch, self._discrete], device=self._device
+                    [batch_size, self._stoch, self._discrete], device=device
                 ),
                 deter=deter,
             )
         else:
             state = dict(
-                mean=torch.zeros([batch_size, self._stoch], device=self._device),
-                std=torch.zeros([batch_size, self._stoch], device=self._device),
-                stoch=torch.zeros([batch_size, self._stoch], device=self._device),
+                mean=torch.zeros([batch_size, self._stoch], device=device),
+                std=torch.zeros([batch_size, self._stoch], device=device),
+                stoch=torch.zeros([batch_size, self._stoch], device=device),
                 deter=deter,
             )
         if self._initial == "zeros":
@@ -176,7 +177,8 @@ class RSSM(nn.Module):
         if prev_state == None or torch.sum(is_first) == len(is_first):
             prev_state = self.initial(len(is_first))
             prev_action = torch.zeros(
-                (len(is_first), self._num_actions), device=self._device
+                (len(is_first), self._num_actions),
+                device=embed.device
             )
         # overwrite the prev_state only where is_first=True
         elif torch.sum(is_first) > 0:
@@ -459,7 +461,7 @@ class MLP(nn.Module):
         unimix_ratio=0.01,
         outscale=1.0,
         symlog_inputs=False,
-        device="cuda",
+        device=None,
         name="NoName",
     ):
         super(MLP, self).__init__()
@@ -468,7 +470,7 @@ class MLP(nn.Module):
             self._shape = (1,)
         act = getattr(torch.nn, act)
         self._dist = dist
-        self._std = std if isinstance(std, str) else torch.tensor((std,), device=device)
+        self._std = std if isinstance(std, str) else float(std)
         self._min_std = min_std
         self._max_std = max_std
         self._absmax = absmax
@@ -540,7 +542,8 @@ class MLP(nn.Module):
         if dist == "tanh_normal":
             mean = torch.tanh(mean)
             std = F.softplus(std) + self._min_std
-            dist = torchd.normal.Normal(mean, std)
+            std_tensor = torch.as_tensor(self._std, device=mean.device, dtype=mean.dtype)
+            dist = torchd.normal.Normal(mean, std_tensor)
             dist = torchd.transformed_distribution.TransformedDistribution(
                 dist, tools.TanhBijector()
             )
@@ -588,7 +591,7 @@ class MLP(nn.Module):
                 )
             )
         elif dist == "symlog_disc":
-            dist = tools.DiscDist(logits=mean, device=self._device)
+            dist = tools.DiscDist(logits=mean)
         elif dist == "symlog_mse":
             dist = tools.SymlogDist(mean)
         elif dist == "mse":
