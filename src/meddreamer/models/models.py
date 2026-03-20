@@ -362,9 +362,9 @@ class ImagBehavior(nn.Module):
             slow_target = self._slow_value(value_input[:-1].detach())
             if self._config.critic["slow_target"]:
                 value_loss -= value.log_prob(slow_target.mode().detach())
-            if self._config.critic["repl_loss"]:
+            if self._config.critic.get("repl_loss", False):
                 swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-                feat, rew, cont, delta = map(swap, (feat, data["reward"], data["cont"], data["delta"])) # → (T, B, 1)
+                rew, cont, delta = map(swap, (data["reward"], data["cont"], data["delta"])) # → (T, B, 1)
                 repfeat = feat.detach() # (T, B, D)
                 pcont = torch.exp(-delta / 5).mean(dim=-1, keepdim=True) # (T, B, 1)
 
@@ -391,13 +391,15 @@ class ImagBehavior(nn.Module):
                 # Compute loss between predicted and normalized return
                 repval_loss = (val - ret_padded.detach()) ** 2
                 repval_loss += self._config.critic["slow_reg"] * (slowval - ret_padded.detach()) ** 2
-                repval_loss = repval_loss.reshape(1, -1)
 
-                value_loss += self._config.critic["rep_loss_weight"] * repval_loss
-                metrics["reploss/repval_loss"] = to_np(repval_loss)
+                value_loss = value_loss[:, :, None]
+                value_loss_main = torch.mean(weights[:-1] * value_loss)
 
-            # (time, batch, 1), (time, batch, 1) -> (1,)
-            value_loss = torch.mean(weights[:-1] * value_loss[:, :, None])
+                rep_weights = torch.ones_like(repval_loss)
+                value_loss_rep = torch.mean(rep_weights * repval_loss)
+
+                value_loss = value_loss_main + self._config.critic["rep_loss_weight"] * value_loss_rep
+                metrics["reploss/repval_loss"] = to_np(repval_loss.mean())
 
         metrics.update(tools.tensorstats(value.mode(), "value"))
         metrics.update(tools.tensorstats(target, "target"))
@@ -446,39 +448,34 @@ class ImagBehavior(nn.Module):
             actor_loss = torch.mean(actor_loss)
             metrics.update(mets)
 
-        with tools.RequiresGrad(self.value):
-            repfeat = feat.detach() # (T, B, D)
-            target = torch.stack(target, dim=1)
-            pcont = torch.exp(-delta / 5).mean(dim=-1, keepdim=True) # (T, B, 1)
+            with tools.RequiresGrad(self.value):
+                repfeat = feat.detach()
+                target = torch.stack(target, dim=1)
+                pcont = torch.exp(-delta / 5).mean(dim=-1, keepdim=True)
 
-            # Forward through value networks
-            value = self.value(repfeat).mode()          # (T, B, 1)
-            slowval = self._slow_value(repfeat).mode()  # (T, B, 1)
-            boot = slowval[-1].detach()               # (B, 1)
+                value = self.value(repfeat).mode()
+                slowval = self._slow_value(repfeat).mode()
+                boot = slowval[-1].detach()
 
-            ret = tools.lambda_return(
-                reward=reward[1:],
-                value=slowval[:-1].detach(),  # (T-1, B, 1)
-                pcont=pcont[1:],               # (T-1, B, 1)
-                bootstrap=boot,
-                lambda_=self._config.discount_lambda,
-                axis=0,
-            )  # → (T, B, 1)
+                ret = tools.lambda_return(
+                    reward=reward[1:],
+                    value=slowval[:-1].detach(),
+                    pcont=pcont[1:],
+                    bootstrap=boot,
+                    lambda_=self._config.discount_lambda,
+                    axis=0,
+                )
 
-            # Normalize return
-            ret = torch.stack(ret, dim=1)
-            offset, scale = self._valuenorm.update(ret)
-            ret_normed = (ret - offset) / scale
-            ret_padded = torch.cat([ret_normed, torch.zeros_like(ret_normed[:1])], dim=0)  # (T, B, 1)
+                ret = torch.stack(ret, dim=1)
+                offset, scale = self._valuenorm.update(ret)
+                ret_normed = (ret - offset) / scale
+                ret_padded = torch.cat([ret_normed, torch.zeros_like(ret_normed[:1])], dim=0)
 
-            # Compute loss between predicted and normalized return
-            repval_loss = (value - ret_padded.detach()) ** 2
-            repval_loss += self._config.critic["slow_reg"] * (slowval - ret_padded.detach()) ** 2
+                repval_loss = (value - ret_padded.detach()) ** 2
+                repval_loss += self._config.critic["slow_reg"] * (slowval - ret_padded.detach()) ** 2
 
-            # metrics["reploss/repval_loss"] = to_np(repval_loss)
-
-            # (time, batch, 1), (time, batch, 1) -> (1,)
-            value_loss = torch.mean(weights * repval_loss)
+                value_loss = torch.mean(weights * repval_loss)
+                metrics["reploss/repval_loss"] = to_np(repval_loss.mean())
 
         metrics.update(tools.tensorstats(value, "value"))
         metrics.update(tools.tensorstats(target, "target"))
@@ -497,14 +494,17 @@ class ImagBehavior(nn.Module):
         gamma = self._config.discount_lambda
 
         with tools.RequiresGrad(self.value):
-            value_t = self.value(feat[:-1])         # (T-1, B, 1)
-            value_tp1 = self._slow_value(feat[1:]).mode().detach()  # (T-1, B, 1)
+            value_t = self.value(feat[:-1])
+            value_tp1 = self._slow_value(feat[1:]).mode().detach()
             reward_t = reward[:-1]
             cont_t = cont[:-1]
 
             target = reward_t + gamma * cont_t * value_tp1
             value_loss = -value_t.log_prob(target.detach())
             value_loss = value_loss.mean()
+
+            metrics["td/value_loss"] = to_np(value_loss)
+            metrics["td/target_mean"] = to_np(target.mean())
 
         with tools.RequiresGrad(self.actor):
             policy = self.actor(feat[:-1].detach())
