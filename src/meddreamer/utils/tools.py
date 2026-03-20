@@ -861,7 +861,11 @@ def load_model(agent, model_name, dir, epoch, device, actor_lr=None, value_lr=No
             items_to_load["optims_state_dict"]['_task_behavior._value_opt._opt']['param_groups'][0]['lr'] = value_lr
         recursively_load_optim_state_dict(agent, items_to_load["optims_state_dict"])
     else:
-        checkpoint = torch.load(pathlib.Path(dir).expanduser() / f"{model_name}_{epoch}.pt", map_location=device)
+        checkpoint = torch.load(
+            pathlib.Path(dir).expanduser() / f"{model_name}_{epoch}.pt",
+            map_location=device,
+            weights_only=False,
+        )
         assert checkpoint["model_name"] == model_name, \
             f"Expected {model_name}, but file contains {checkpoint['model_name']}"
 
