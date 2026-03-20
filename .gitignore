@@ -20,3 +20,6 @@ wheels/
 
 # MacOS system files
 .DS_Store
+
+# Logs and temporary files
+logs/
