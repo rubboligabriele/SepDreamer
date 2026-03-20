@@ -1,5 +1,4 @@
-import collections
-import io
+import time
 import os
 import json
 import pathlib
@@ -96,55 +95,83 @@ def extract_best_from_json(logdir):
 
 def from_generator(generator, batch_size):
     while True:
-        batch = []
-        for _ in range(batch_size):
-            batch.append(next(generator))
+        batch = [next(generator) for _ in range(batch_size)]
+
         data = {}
-        for key in batch[0].keys():
-            data[key] = []
-            for i in range(batch_size):
-                data[key].append(batch[i][key])
-            data[key] = np.stack(data[key], 0)
+        keys = batch[0].keys()
+
+        for key in keys:
+            arrays = [x[key] for x in batch]
+            data[key] = np.stack(arrays, axis=0)
+
         yield data
 
 def sample_episodes(episodes, length, seed=0):
     np_random = np.random.RandomState(seed)
+
+    episode_list = list(episodes.values())
+    if len(episode_list) == 0:
+        raise ValueError("No episodes available.")
+
+    time_keys = [
+        "timestep",
+        "features",
+        "action",
+        "reward",
+        "mask",
+        "delta",
+        "is_first",
+        "is_terminal",
+        "discount",
+        "mortality",
+    ]
+
+    episode_lengths = np.array(
+        [len(ep["timestep"]) for ep in episode_list],
+        dtype=np.int64,
+    )
+
+    p = episode_lengths.astype(np.float64)
+    p = p / p.sum()
+
     while True:
         size = 0
-        ret = None
-        p = np.array(
-            [len(next(iter(episode.values()))) for episode in episodes.values()]
-        )
-        p = p / np.sum(p)
+        chunks = []
+        first_flags = []
+
         while size < length:
-            episode = np_random.choice(list(episodes.values()), p=p)
-            total = len(next(iter(episode.values())))
-            # make sure at least one transition included
+            ep_idx = np_random.choice(len(episode_list), p=p)
+            episode = episode_list[ep_idx]
+            total = episode_lengths[ep_idx]
+
             if total < 2:
                 continue
-            if not ret:
+
+            if size == 0:
                 index = int(np_random.randint(0, total - 1))
-                ret = {
-                    k: v[index : min(index + length, total)].copy()
-                    for k, v in episode.items()
-                    if "log_" not in k
-                }
-                if "is_first" in ret:
-                    ret["is_first"][0] = True
+                end = min(index + length, total)
             else:
-                # 'is_first' comes after 'is_last'
                 index = 0
                 possible = length - size
-                ret = {
-                    k: np.append(
-                        ret[k], v[index : min(index + possible, total)].copy(), axis=0
-                    )
-                    for k, v in episode.items()
-                    if "log_" not in k
-                }
-                if "is_first" in ret:
-                    ret["is_first"][size] = True
-            size = len(next(iter(ret.values())))
+                end = min(index + possible, total)
+
+            chunk = {
+                k: episode[k][index:end].copy()
+                for k in time_keys
+            }
+
+            chunks.append(chunk)
+            first_flags.append(size)
+            size += len(chunk["timestep"])
+
+        ret = {}
+        for k in time_keys:
+            ret[k] = np.concatenate([c[k] for c in chunks], axis=0)
+
+        ret["is_first"][:] = False
+        for pos in first_flags:
+            ret["is_first"][pos] = True
+
         yield ret
 
 class EpisodeSampler:
