@@ -15,11 +15,11 @@ wheels/
 # client secrets file
 /src/data_extraction/client_secret.json
 
-# data files
-/data/
-
 # MacOS system files
 .DS_Store
 
+# data files
+/data
+
 # Logs and temporary files
-logs/
+/logs
