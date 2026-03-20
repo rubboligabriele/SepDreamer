@@ -86,6 +86,14 @@ def prepare_episode_for_stay(
     stay_mask = stay_mask.sort_values(C_TIMESTEP).reset_index(drop=True)
     stay_delta = stay_delta.sort_values(C_TIMESTEP).reset_index(drop=True)
 
+    expected_bloc = np.arange(len(stay_states_raw))
+    if not np.array_equal(stay_states_raw[C_BLOC].values, expected_bloc):
+        print(f"Warning: rebuilding bloc for stay {stay_id}")
+
+
+    stay_states_raw[C_BLOC] = np.arange(len(stay_states_raw), dtype=np.int64)
+    stay_states_norm[C_BLOC] = np.arange(len(stay_states_norm), dtype=np.int64)
+
     if len(stay_states_raw) < min_seq_len:
         return None
 
@@ -153,7 +161,7 @@ def prepare_episode_for_stay(
         delta = delta_base
 
     reward = stay_states_raw[reward_col].astype(np.float32).fillna(0.0).values
-    timesteps = stay_states_raw[C_TIMESTEP].astype(np.float32).values
+    timesteps = stay_states_raw[C_BLOC].astype(np.float32).values
 
     if outcome_col not in stay_states_raw.columns:
         raise ValueError(f"Outcome column '{outcome_col}' not found in states file")
