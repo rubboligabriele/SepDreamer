@@ -1,8 +1,8 @@
 defaults:
   mode: 'world_model' # 'policy_p1', 'policy_p2', 'world_model', 'dreamer'
-  logdir: '/your/own/path/to/log'
-  logname: 'your_log_name'
-  datadir: '/your/own/path/to/data'
+  logdir: 'logs'
+  logname: 'default_log'
+  datadir: 'data/meddreamer_dataset'
   ckptdir: 'your/own/path/to/checkpoints'
   ckptepoch: 10000
   seed: 0
