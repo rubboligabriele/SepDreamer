@@ -236,11 +236,10 @@ class DiscDist:
         high=20.0,
         transfwd=symlog,
         transbwd=symexp,
-        device="cuda",
     ):
         self.logits = logits
         self.probs = torch.softmax(logits, -1)
-        self.buckets = torch.linspace(low, high, steps=255, device=device)
+        self.buckets = torch.linspace(low, high, steps=255, device=logits.device)
         self.width = (self.buckets[-1] - self.buckets[0]) / 255
         self.transfwd = transfwd
         self.transbwd = transbwd
