@@ -1,6 +1,7 @@
 import argparse
 import os
 import pathlib
+import pickle
 import sys
 import time
 
@@ -40,15 +41,56 @@ def main(config):
     if config.debug:
         all_stay_ids = all_stay_ids[:1000]
 
-    train_stay_ids, test_stay_ids = train_test_split(
-        all_stay_ids, test_size=0.2, random_state=config.seed
-    )
+    cache_root = os.path.dirname(eps_dir)
+    split_path = os.path.join(cache_root, f"splits_seed{config.seed}.pkl")
 
-    train_cache_path = os.path.join(os.path.dirname(eps_dir), "train_eps_cache.pkl")
-    train_eps = tools.load_split_episodes(eps_dir, train_stay_ids, cache_path=train_cache_path)
+    if os.path.exists(split_path):
+        print(f"Loading fixed splits from {split_path}", flush=True)
+        with open(split_path, "rb") as f:
+            splits = pickle.load(f)
+        train_stay_ids = splits["train"]
+        val_stay_ids = splits["val"]
+        test_stay_ids = splits["test"]
+    else:
+        trainval_stay_ids, test_stay_ids = train_test_split(
+            all_stay_ids, train_size=0.6, random_state=config.seed
+        )
 
-    eval_cache_path = os.path.join(os.path.dirname(eps_dir), "val_eps_cache.pkl")
-    eval_eps = tools.load_split_episodes(eps_dir, test_stay_ids, cache_path=eval_cache_path)
+        train_stay_ids, val_stay_ids = train_test_split(
+            trainval_stay_ids, test_size=0.2, random_state=config.seed
+        )
+
+        splits = {
+            "train": train_stay_ids,
+            "val": val_stay_ids,
+            "test": test_stay_ids,
+        }
+
+        with open(split_path, "wb") as f:
+            pickle.dump(splits, f)
+
+        print(f"Saved fixed splits to {split_path}", flush=True)
+
+    cache_root = os.path.dirname(eps_dir)
+
+    train_cache_path = os.path.join(cache_root, f"train_eps_cache_seed{config.seed}.pkl")
+    val_cache_path = os.path.join(cache_root, f"val_eps_cache_seed{config.seed}.pkl")
+    test_cache_path = os.path.join(cache_root, f"test_eps_cache_seed{config.seed}.pkl")
+
+    if config.training:
+        train_eps = tools.load_split_episodes(eps_dir, train_stay_ids, cache_path=train_cache_path)
+        eval_eps = tools.load_split_episodes(eps_dir, val_stay_ids, cache_path=val_cache_path)
+        train_dataset = make_dataset(train_eps, config)
+        print("Using validation split for eval.", flush=True)
+    else:
+        train_eps = None
+        train_dataset = None
+        eval_eps = tools.load_split_episodes(eps_dir, test_stay_ids, cache_path=test_cache_path)
+        print("Using test split for final evaluation.", flush=True)
+
+    print(f"Train stays: {len(train_stay_ids)}", flush=True)
+    print(f"Val stays: {len(val_stay_ids)}", flush=True)
+    print(f"Test stays: {len(test_stay_ids)}", flush=True)
 
     train_dataset = make_dataset(train_eps, config)
     
