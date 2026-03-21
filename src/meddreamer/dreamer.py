@@ -413,7 +413,7 @@ class Dreamer(nn.Module):
                 self._metrics[name].append(value)
     
     def _eval_log(self, model_name, epoch):
-        if epoch > 0 and self._should_eval(epoch):
+        if epoch >= self._config.eval_every and self._should_eval(epoch):
             self._eval(self._eval_dataset)
         if self._should_log(epoch):
             for name, values in self._metrics.items():
