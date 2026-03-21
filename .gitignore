@@ -26,3 +26,7 @@ wheels/
 
 # Launch script for Habrok
 /launch.sh
+
+# habrok files
+*.err
+*.out
