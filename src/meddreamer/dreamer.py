@@ -415,7 +415,8 @@ class Dreamer(nn.Module):
     def _eval_log(self, model_name, epoch):
         if epoch >= self._config.eval_every and self._should_eval(epoch):
             self._eval(self._eval_dataset)
-        if self._should_log(epoch):
+
+        if epoch >= self._config.log_every and self._should_log(epoch):
             for name, values in self._metrics.items():
                 self._logger.scalar(name, float(np.mean(values)))
                 self._metrics[name] = []
@@ -426,7 +427,8 @@ class Dreamer(nn.Module):
             best_summary = tools.extract_best_from_json(self._logdir)
             with open(self._logdir / "best_metrics.jsonl", "w") as f:
                 json.dump(best_summary, f, indent=2)
-        if self._should_save(epoch):
+
+        if epoch >= self._config.save_every and self._should_save(epoch):
             tools.save_model(self, model_name, self._logdir, epoch)
             with open(self._logdir / "parameters.jsonl", "w") as f:
                 json.dump(vars(self._config), f, indent=2)
