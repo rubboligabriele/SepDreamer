@@ -3,6 +3,7 @@ import os
 import json
 import pathlib
 import random
+import pickle
 
 import numpy as np
 from scipy.stats import sem
@@ -193,12 +194,31 @@ def load_all_episode_keys(saved_eps_dir):
     stay_ids = [fname[:-4] for fname in filenames]
     return stay_ids
 
-def load_split_episodes(saved_eps_dir, stay_ids):
+def load_split_episodes(saved_eps_dir, stay_ids, cache_path=None):
+    if cache_path is not None and os.path.exists(cache_path):
+        print(f"[DataLoader] Loading cached episodes from {cache_path}", flush=True)
+        with open(cache_path, "rb") as f:
+            episodes = pickle.load(f)
+        return episodes
+
     episodes = {}
-    for stay_id in stay_ids:
+    total = len(stay_ids)
+
+    print(f"[DataLoader] Loading {total} episodes from {saved_eps_dir}", flush=True)
+
+    for i, stay_id in enumerate(stay_ids, 1):
         filepath = os.path.join(saved_eps_dir, f"{stay_id}.npz")
         episode = load_episode_npz(filepath)
         episodes[stay_id] = episode
+
+        if i % 100 == 0 or i == 1:
+            print(f"[DataLoader] Loaded {i}/{total}", flush=True)
+
+    if cache_path is not None:
+        print(f"[DataLoader] Saving cache to {cache_path}", flush=True)
+        with open(cache_path, "wb") as f:
+            pickle.dump(episodes, f)
+
     return episodes
 
 class SampleDist:
