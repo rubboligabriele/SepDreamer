@@ -648,19 +648,35 @@ def args_type(default):
 def static_scan(fn, inputs, start):
     last = start
     indices = range(inputs[0].shape[0])
+
+    # Handle empty sequence
+    if inputs[0].shape[0] == 0:
+        if isinstance(start, dict):
+            return [{k: v.new_empty((0,) + v.shape) for k, v in start.items()}]
+        elif isinstance(start, (list, tuple)):
+            outputs = []
+            for item in start:
+                if isinstance(item, dict):
+                    outputs.append({k: v.new_empty((0,) + v.shape) for k, v in item.items()})
+                else:
+                    outputs.append(item.new_empty((0,) + item.shape))
+            return outputs
+        else:
+            return [start.new_empty((0,) + start.shape)]
+
     flag = True
     for index in indices:
         inp = lambda x: (_input[x] for _input in inputs)
         last = fn(last, *inp(index))
         if flag:
-            if type(last) == type({}):
+            if isinstance(last, dict):
                 outputs = {
                     key: value.clone().unsqueeze(0) for key, value in last.items()
                 }
             else:
                 outputs = []
                 for _last in last:
-                    if type(_last) == type({}):
+                    if isinstance(_last, dict):
                         outputs.append(
                             {
                                 key: value.clone().unsqueeze(0)
@@ -671,14 +687,14 @@ def static_scan(fn, inputs, start):
                         outputs.append(_last.clone().unsqueeze(0))
             flag = False
         else:
-            if type(last) == type({}):
+            if isinstance(last, dict):
                 for key in last.keys():
                     outputs[key] = torch.cat(
                         [outputs[key], last[key].unsqueeze(0)], dim=0
                     )
             else:
                 for j in range(len(outputs)):
-                    if type(last[j]) == type({}):
+                    if isinstance(last[j], dict):
                         for key in last[j].keys():
                             outputs[j][key] = torch.cat(
                                 [outputs[j][key], last[j][key].unsqueeze(0)], dim=0
@@ -687,7 +703,8 @@ def static_scan(fn, inputs, start):
                         outputs[j] = torch.cat(
                             [outputs[j], last[j].unsqueeze(0)], dim=0
                         )
-    if type(last) == type({}):
+
+    if isinstance(last, dict):
         outputs = [outputs]
     return outputs
 

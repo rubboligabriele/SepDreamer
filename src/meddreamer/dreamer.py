@@ -74,6 +74,11 @@ class Dreamer(nn.Module):
 
             # evaluate the world model
             init = {k: v[:, -1] for k, v in states.items()}
+
+            if phys_action.shape[1] <= 5:
+                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
+                continue
+
             prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
             reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
             def cont_penalty(cont_pred, a = 0.01, b = 0.01, c = 0.001):
@@ -186,9 +191,14 @@ class Dreamer(nn.Module):
             states, _ = self._wm.dynamics.observe(
                     embed[:, :5], phys_action[:, :5], is_first[:, :5]
                 )
-        
+
             # evaluate the world model
             init = {k: v[:, -1] for k, v in states.items()}
+
+            if phys_action.shape[1] <= 5:
+                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
+                continue
+
             prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
             reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
             def cont_penalty(cont_pred, a = 0.01, b = 0.01, c = 0.001):
@@ -256,12 +266,17 @@ class Dreamer(nn.Module):
             states, _ = self._wm.dynamics.observe(
                     embed[:, :5], phys_action[:, :5], is_first[:, :5]
                 )
-        
+
             # evaluate the world model
             recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
             reward_post = self._wm.heads["reward"](self._wm.dynamics.get_feat(states)).mode()
             cont_post = self._wm.heads["cont"](self._wm.dynamics.get_feat(states)).mode()
             init = {k: v[:, -1] for k, v in states.items()}
+
+            if phys_action.shape[1] <= 5:
+                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
+                continue
+
             prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
             openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
             reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
@@ -398,7 +413,7 @@ class Dreamer(nn.Module):
                 self._metrics[name].append(value)
     
     def _eval_log(self, model_name, epoch):
-        if self._should_eval(epoch):
+        if epoch > 0 and self._should_eval(epoch):
             self._eval(self._eval_dataset)
         if self._should_log(epoch):
             for name, values in self._metrics.items():
