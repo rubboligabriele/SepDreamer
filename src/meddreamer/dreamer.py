@@ -418,9 +418,13 @@ class Dreamer(nn.Module):
 
         if epoch >= self._config.log_every and self._should_log(epoch):
             for name, values in self._metrics.items():
+                if len(values) == 0:
+                    continue
                 self._logger.scalar(name, float(np.mean(values)))
                 self._metrics[name] = []
             for name, values in self._images.items():
+                if len(values) == 0:
+                    continue
                 self._logger.image(name, values)
                 self._images[name] = []
             self._logger.write(epoch // self._config.log_every)
