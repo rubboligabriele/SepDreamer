@@ -44,8 +44,11 @@ def main(config):
         all_stay_ids, test_size=0.2, random_state=config.seed
     )
 
-    train_eps = tools.load_split_episodes(eps_dir, train_stay_ids)
-    eval_eps = tools.load_split_episodes(eps_dir, test_stay_ids)
+    train_cache_path = os.path.join(os.path.dirname(eps_dir), "train_eps_cache.pkl")
+    train_eps = tools.load_split_episodes(eps_dir, train_stay_ids, cache_path=train_cache_path)
+
+    eval_cache_path = os.path.join(os.path.dirname(eps_dir), "val_eps_cache.pkl")
+    eval_eps = tools.load_split_episodes(eps_dir, test_stay_ids, cache_path=eval_cache_path)
 
     train_dataset = make_dataset(train_eps, config)
     
