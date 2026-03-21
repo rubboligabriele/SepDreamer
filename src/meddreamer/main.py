@@ -5,6 +5,7 @@ import pickle
 import sys
 import time
 
+import random
 from ruamel.yaml import YAML
 from datetime import datetime
 from sklearn.model_selection import train_test_split
@@ -80,8 +81,16 @@ def main(config):
     if config.training:
         train_eps = tools.load_split_episodes(eps_dir, train_stay_ids, cache_path=train_cache_path)
         eval_eps = tools.load_split_episodes(eps_dir, val_stay_ids, cache_path=val_cache_path)
+
+        max_eval_episodes = 200
+        rng = random.Random(config.seed)
+        eval_keys = list(eval_eps.keys())
+        if len(eval_keys) > max_eval_episodes:
+            selected_keys = rng.sample(eval_keys, max_eval_episodes)
+            eval_eps = {k: eval_eps[k] for k in selected_keys}
+
         train_dataset = make_dataset(train_eps, config)
-        print("Using validation split for eval.", flush=True)
+        print(f"Using validation subset for eval: {len(eval_eps)} episodes.", flush=True)
     else:
         train_eps = None
         train_dataset = None
@@ -91,8 +100,6 @@ def main(config):
     print(f"Train stays: {len(train_stay_ids)}", flush=True)
     print(f"Val stays: {len(val_stay_ids)}", flush=True)
     print(f"Test stays: {len(test_stay_ids)}", flush=True)
-
-    train_dataset = make_dataset(train_eps, config)
     
     end_time = time.time()
     print(f"Time taken to load data: {(end_time - start_time)/60:.2f} min.")
