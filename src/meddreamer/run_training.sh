@@ -2,7 +2,7 @@
 source /scratch/$USER/meddreamer/env/bin/activate
 cd ~/MedDreamer-615C
 
-python -m src.meddreamer.main \
+python -u -m src.meddreamer.main \
   --configs defaults \
   --datadir data/meddreamer_dataset \
   --logdir logs \
