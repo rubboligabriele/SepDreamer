@@ -408,7 +408,71 @@ class Dreamer(nn.Module):
             else:
                 self._images[name].append(value)
 
-    def _train_wm(self, data): #similar to the original train_epoch function in trainer
+    def _eval_behavior(self, episodes):
+        metrics = {}
+
+        total_loss = 0.0
+        total_correct = 0.0
+        total_clin_prob = 0.0
+        total_entropy = 0.0
+        total_steps = 0
+
+        self._wm.eval()
+        self._behavior_policy.eval()
+
+        with torch.no_grad():
+            for stay_id, data in tqdm(episodes.items(), desc="Evaluating Behavior Policy"):
+                data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
+
+                # Reconstruct the features using the world model's decoder and get the latent representation
+                post, _, data = self._wm._load(data)
+                feat = self._wm.dynamics.get_feat(post)      # [B, T, D]
+                action = data["action"]                      # [B, T, A]
+
+                # Flatten
+                feat = feat.reshape(-1, feat.shape[-1])      # [N, D]
+                action = action.reshape(-1, action.shape[-1])# [N, A]
+
+                if feat.shape[0] == 0:
+                    continue
+
+                dist = self._behavior_policy(feat)
+
+                # Average NLL of the clinical action
+                loss = -dist.log_prob(action)                # [N]
+                total_loss += loss.sum().item()
+
+                # Accuracy top-1
+                pred_idx = torch.argmax(dist.probs, dim=-1)  # [N]
+                true_idx = torch.argmax(action, dim=-1)      # [N]
+                total_correct += (pred_idx == true_idx).sum().item()
+
+                # Probability assigned to the clinical action by the behavior policy
+                clin_prob = (dist.probs * action).sum(dim=-1)   # [N]
+                total_clin_prob += clin_prob.sum().item()
+
+                # Mean entropy of the behavior policy's action distribution
+                entropy = dist.entropy()                     # [N]
+                total_entropy += entropy.sum().item()
+
+                total_steps += feat.shape[0]
+
+        if total_steps == 0:
+            print("No valid steps for behavior evaluation.", flush=True)
+            return
+
+        metrics["behavior_loss_eval"] = total_loss / total_steps
+        metrics["behavior_acc_eval"] = total_correct / total_steps
+        metrics["behavior_clin_prob_eval"] = total_clin_prob / total_steps
+        metrics["behavior_entropy_eval"] = total_entropy / total_steps
+
+        for name, value in metrics.items():
+            if name not in self._metrics:
+                self._metrics[name] = [value]
+            else:
+                self._metrics[name].append(value)
+
+    def _train_wm(self, data): # similar to the original train_epoch function in trainer
         metrics = {}
         post, context, mets = self._wm._train(data)
         metrics.update(mets)
@@ -459,7 +523,10 @@ class Dreamer(nn.Module):
     
     def _eval_log(self, model_name, epoch):
         if epoch >= self._config.eval_every and self._should_eval(epoch):
-            self._eval(self._eval_dataset)
+            if self._config.mode != "behavior":
+                self._eval(self._eval_dataset)
+            else:
+                self._eval_behavior(self._eval_dataset)
 
         if epoch >= self._config.log_every and self._should_log(epoch):
             for name, values in self._metrics.items():
@@ -516,4 +583,4 @@ class MedDreamer(Dreamer):
     def train_behavior(self, epochs):
         for epoch in trange(0, epochs + 1, desc="Training Behavior Policy"):
             self._train_behavior(next(self._train_dataset))
-            self._eval_log("all", epoch)
+            self._eval_log("behavior_policy", epoch)
