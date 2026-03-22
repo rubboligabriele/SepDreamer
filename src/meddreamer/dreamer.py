@@ -50,7 +50,7 @@ class Dreamer(nn.Module):
         sofas = []
         mortalities = []
         full_mort = []
-        num_episodes = len(episodes)
+        valid_episodes = 0
         features_dict = {"ori_feat": [], "recon_feat": []}
         
         for stay_id, data in tqdm(episodes.items()):
@@ -73,6 +73,8 @@ class Dreamer(nn.Module):
                 print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
                 continue
 
+            valid_episodes += 1
+
             states, _ = self._wm.dynamics.observe(
                     embed[:, :5], phys_action[:, :5], is_first[:, :5]
                 )
@@ -94,7 +96,7 @@ class Dreamer(nn.Module):
 
             imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(init, self._task_behavior.actor, 50)
             imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()   
-            imag_rewards += imag_reward.sum(dim=0).squeeze()
+            imag_rewards += float(to_np(imag_reward.sum()))
 
             recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
             openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
@@ -103,19 +105,30 @@ class Dreamer(nn.Module):
             features_dict["recon_feat"].append(to_np(recon_feature))
 
             actions = []
+            clin_probs = []
             ai_episode_return = 0
             _, T, _, _ = prior["stoch"].shape
+
             for t in range(T):
                 init = {k: v[:, t] for k, v in prior.items()}
                 feat = self._wm.dynamics.get_feat(init)
                 inp = feat.detach()
-                actor = self._task_behavior.actor(inp)
-                action = actor.sample()
+
+                actor_dist = self._task_behavior.actor(inp)   # AI policy distribution
+                action = actor_dist.sample()                  # AI sampled action
                 actions.append(to_np(action))
+
+                clin_action_onehot = phys_action[:, 5 + t]    # medician action
+                logp_clin = actor_dist.log_prob(clin_action_onehot)   # log pi_AI(a_clin | s_t)
+                p_clin = torch.exp(logp_clin)                 # pi_AI(a_clin | s_t)
+                clin_probs.append(to_np(p_clin))
+
                 succ = self._wm.dynamics.img_step(init, action)
                 ai_value = self._wm.heads["reward"](self._wm.dynamics.get_feat(succ).detach()).mode()
                 ai_episode_return += to_np(ai_value.squeeze())
+
             actions = np.stack(actions, axis=1)
+            clin_probs = np.stack(clin_probs, axis=1)
             
             ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
             phys_actions.append(np.argmax(to_np(phys_action[0, 5:]), axis=-1))
@@ -124,12 +137,18 @@ class Dreamer(nn.Module):
 
             ai_episode_returns.append(ai_episode_return)
 
-            v_cwpdis_per_traj, ess_per_traj = tools.cwpdis_ess_eval(actions, phys_action[:, 5:], data["reward"][:, 5:], gamma=0.99)
+            v_cwpdis_per_traj, ess_per_traj = tools.cwpdis_ess_eval(
+                clin_probs, data["reward"][:, 5:], gamma=0.99
+            )
             v_cwpdis += v_cwpdis_per_traj
             ess += ess_per_traj
 
             if data["mortality"].any() == 1:
-                true_mortality += 1  
+                true_mortality += 1
+
+        if valid_episodes == 0:
+            print("No valid episodes for evaluation.", flush=True)
+            return
 
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
@@ -142,14 +161,14 @@ class Dreamer(nn.Module):
         fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
 
         ai_mortality, ai_std = tools.calculate_esmitated_mortality(ai_episode_returns, bin_centers, smoothed, smoothed_sem)
-        true_mortality = true_mortality / num_episodes
+        true_mortality = true_mortality / valid_episodes
         mortality_decrease = true_mortality - ai_mortality
         metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
         metrics["ai_mortality"] = round(ai_mortality * 100, 2)
         metrics["true_mortality"] = true_mortality
-        metrics["v_cwpdis"] = to_np(v_cwpdis)/ num_episodes
-        metrics["ess"] = to_np(ess)/ num_episodes
-        metrics["imag_episode_return"] = to_np(imag_rewards) / num_episodes
+        metrics["v_cwpdis"] = to_np(v_cwpdis)/ valid_episodes
+        metrics["ess"] = to_np(ess)/ valid_episodes
+        metrics["imag_episode_return"] = to_np(imag_rewards) / valid_episodes
         metrics["ai_episode_return"] = float(ai_episode_returns.mean())
 
         data = {
@@ -235,7 +254,7 @@ class Dreamer(nn.Module):
         # to check if the world model is imagining correctly and reconstructing the image correctly
         metrics = {}
         images = {}
-        num_episodes = len(episodes)
+        valid_episodes = 0
         cont_acc = 0
         recon_error = 0
         reward_error = 0
@@ -278,6 +297,8 @@ class Dreamer(nn.Module):
                 print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
                 continue
 
+            valid_episodes += 1
+
             prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
             openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
             reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
@@ -296,28 +317,41 @@ class Dreamer(nn.Module):
                 # evaluate rollouts
                 imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(init, self._task_behavior.actor, 50)
                 imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()   
-                imag_rewards += imag_reward.sum(dim=0).squeeze()
+                imag_rewards += float(to_np(imag_reward.sum()))
 
                 # only evaluate one transition otherwise it's not a trajectory and cannot be sent to critic for value calculation
                 actions = []
+                clin_probs = []
                 ai_episode_return = 0
                 _, T, _, _ = prior["stoch"].shape
+
                 for t in range(T):
                     init = {k: v[:, t] for k, v in prior.items()}
                     feat = self._wm.dynamics.get_feat(init)
                     inp = feat.detach()
-                    actor = self._task_behavior.actor(inp)
-                    action = actor.sample()
+
+                    actor_dist = self._task_behavior.actor(inp)   # AI policy distribution
+                    action = actor_dist.sample()                  # AI sampled action
                     actions.append(to_np(action))
+
+                    clin_action_onehot = phys_action[:, 5 + t]    # medician action
+                    logp_clin = actor_dist.log_prob(clin_action_onehot)   # log pi_AI(a_clin | s_t)
+                    p_clin = torch.exp(logp_clin)                 # pi_AI(a_clin | s_t)
+                    clin_probs.append(to_np(p_clin))
+
                     succ = self._wm.dynamics.img_step(init, action)
                     ai_value = self._wm.heads["reward"](self._wm.dynamics.get_feat(succ).detach()).mode()
                     ai_episode_return += to_np(ai_value.squeeze())
+
                 actions = np.stack(actions, axis=1)
+                clin_probs = np.stack(clin_probs, axis=1)
                 
                 ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
                 ai_episode_returns.append(ai_episode_return)
 
-                v_cwpdis_per_traj, ess_per_traj = tools.cwpdis_ess_eval(actions, phys_action[:, 5:], data["reward"][:, 5:], gamma=0.99)
+                v_cwpdis_per_traj, ess_per_traj = tools.cwpdis_ess_eval(
+                    clin_probs, data["reward"][:, 5:], gamma=0.99
+                )
                 v_cwpdis += v_cwpdis_per_traj
                 ess += ess_per_traj
 
@@ -326,29 +360,38 @@ class Dreamer(nn.Module):
                 if data["mortality"].any() == 1:
                     true_mortality += 1   
 
-        metrics["recon_error"] = to_np(recon_error) / num_episodes
-        metrics["reward_error"] = to_np(reward_error) / num_episodes
-        metrics["cont_acc"] = to_np(cont_acc) / num_episodes
+        if valid_episodes == 0:
+            print("No valid episodes for evaluation.", flush=True)
+            return
+
+        metrics["recon_error"] = to_np(recon_error) / valid_episodes
+        metrics["reward_error"] = to_np(reward_error) / valid_episodes
+        metrics["cont_acc"] = to_np(cont_acc) / valid_episodes
 
         if self._config.mode != "world_model":
             phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
             ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
             mortalities = np.array(mortalities, dtype=np.float32)
             ai_actions = np.concatenate(ai_actions, axis=0)
-            fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(phys_episode_returns, mortalities)
-            # fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_episode_return(phys_episode_returns, mortalities)
+
+            fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(
+                phys_episode_returns, mortalities
+            )
             images["mortality_vs_expected_return"] = fig
 
-            ai_mortality, ai_std = tools.calculate_esmitated_mortality(ai_episode_returns, bin_centers, smoothed, smoothed_sem)
-            true_mortality = true_mortality / num_episodes
+            ai_mortality, ai_std = tools.calculate_esmitated_mortality(
+                ai_episode_returns, bin_centers, smoothed, smoothed_sem
+            )
+            true_mortality = true_mortality / valid_episodes
             mortality_decrease = true_mortality - ai_mortality
+
             metrics["ai_mortality"] = round(ai_mortality * 100, 2)
             metrics["true_mortality"] = true_mortality
             metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
-            metrics["imag_episode_return"] = to_np(imag_rewards) / num_episodes
-            metrics["ai_episode_return"] = ai_episode_returns.mean()
-            metrics["v_cwpdis"] = to_np(v_cwpdis)/ num_episodes
-            metrics["ess"] = to_np(ess)/ num_episodes
+            metrics["imag_episode_return"] = imag_rewards / valid_episodes
+            metrics["ai_episode_return"] = float(ai_episode_returns.mean())
+            metrics["v_cwpdis"] = float(v_cwpdis) / valid_episodes
+            metrics["ess"] = float(ess) / valid_episodes
             metrics["ai_action_min"] = ai_actions.min()
             metrics["ai_action_max"] = ai_actions.max()
             metrics["ai_action_mean"] = ai_actions.mean()
