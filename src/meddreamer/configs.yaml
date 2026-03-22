@@ -77,6 +77,24 @@ defaults:
   imag_gradient_mix: 0.0
   eval_state_mean: False
 
+behavior:
+  mode: 'behavior'
+  epochs: 2000
+  eval_every: 100
+  log_every: 100
+  save_every: 1000
+  training: True
+  device: 'cuda'
+  task: 'sepsis'
+  dataset: 'mimic'
+  num_features: 40
+  num_actions: 25
+  batch_size: 64
+  train_batch_length: 50
+
+  behavior_model:
+    {layers: 2, dist: 'onehot', unimix_ratio: 0.0, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 1.0}
+
 ventilation:
   mode: 'world_model' # 'policy_p1', 'policy_p2', 'world_model', 'dreamer'
   seed: 4
