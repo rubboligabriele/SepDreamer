@@ -30,6 +30,7 @@ class Dreamer(nn.Module):
         self._eval_dataset = eval_dataset
         self._wm = models.WorldModel(config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
+        self._behavior_policy = models.BehaviorPolicy(config)
     
     def train(self, epochs):  # similar to the original train function in trainer
         for epoch in trange(0, epochs + 1, desc="Training"):
@@ -481,6 +482,21 @@ class Dreamer(nn.Module):
             with open(self._logdir / "parameters.jsonl", "w") as f:
                 json.dump(vars(self._config), f, indent=2)
 
+    def _train_behavior(self, data):
+        metrics = {}
+
+        post, embed, data = self._wm._load(data)
+        feat = self._wm.dynamics.get_feat(post)   # [B, T, D]
+
+        mets = self._behavior_policy.train_batch(feat, data["action"])
+        metrics.update(mets)
+
+        for name, value in metrics.items():
+            if name not in self._metrics:
+                self._metrics[name] = [value]
+            else:
+                self._metrics[name].append(value)
+
 class MedDreamer(Dreamer):
     def __init__(self, config, logger, logdir, train_dataset, eval_dataset):
         super(MedDreamer, self).__init__(config, logger, logdir, train_dataset, eval_dataset)
@@ -495,4 +511,9 @@ class MedDreamer(Dreamer):
             states, _, data = self._wm._load(next(self._train_dataset))
             feat = self._wm.dynamics.get_feat(states)
             self._train_policy(states, feat, data, use_history)
+            self._eval_log("all", epoch)
+
+    def train_behavior(self, epochs):
+        for epoch in trange(0, epochs + 1, desc="Training Behavior Policy"):
+            self._train_behavior(next(self._train_dataset))
             self._eval_log("all", epoch)
