@@ -3,13 +3,9 @@ source /scratch/$USER/meddreamer/env/bin/activate
 cd ~/MedDreamer-615C
 
 python -u -m src.meddreamer.main \
-  --configs defaults \
+  --configs behavior \
   --datadir data/meddreamer_dataset \
   --logdir logs \
   --device cuda \
-  --epochs 100 \
-  --batch_size 12 \
-  --train_batch_length 10 \
-  --eval_every 20 \
-  --log_every 20 \
-  --save_every 50
+  --ckptdir logs/2026-03-21/17-02-22_default_log_mimic_sepsis \
+  --ckptepoch 2000

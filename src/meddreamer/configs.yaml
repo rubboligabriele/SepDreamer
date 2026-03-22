@@ -82,7 +82,7 @@ behavior:
   epochs: 2000
   eval_every: 100
   log_every: 100
-  save_every: 1000
+  save_every: 500
   training: True
   device: 'cuda'
   task: 'sepsis'
