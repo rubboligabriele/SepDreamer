@@ -633,3 +633,58 @@ class ImagBehavior(nn.Module):
                 for s, d in zip(self.value.parameters(), self._slow_value.parameters()):
                     d.data = mix * s.data + (1 - mix) * d.data
             self._updates += 1
+
+
+class BehaviorPolicy(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+
+        if config.dyn_discrete:
+            feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
+        else:
+            feat_size = config.dyn_stoch + config.dyn_deter
+
+        self.policy = networks.MLP(
+            feat_size,
+            (config.num_actions,),
+            config.actor["layers"],
+            config.units,
+            config.act,
+            config.norm,
+            dist="onehot",
+            unimix_ratio=config.actor.get("unimix_ratio", 0.0),
+            outscale=config.actor["outscale"],
+            name="BehaviorPolicy",
+        )
+
+        self._opt = tools.Optimizer(
+            "behavior",
+            self.policy.parameters(),
+            lr=config.actor["lr"],
+            eps=config.actor["eps"],
+            clip=config.actor["grad_clip"],
+            wd=config.weight_decay,
+            opt=config.opt,
+        )
+
+    def forward(self, feat):
+        return self.policy(feat)
+
+    def train_batch(self, feat, action_onehot):
+        """
+        feat: [B, T, D] or [N, D]
+        action_onehot: [B, T, A] or [N, A]
+        """
+        if feat.dim() == 3:
+            feat = feat.reshape(-1, feat.shape[-1])
+        if action_onehot.dim() == 3:
+            action_onehot = action_onehot.reshape(-1, action_onehot.shape[-1])
+
+        with tools.RequiresGrad(self.policy):
+            dist = self.policy(feat)
+            loss = -dist.log_prob(action_onehot).mean()
+            metrics = self._opt(loss, self.policy.parameters(), retain_graph=False)
+
+        metrics["behavior_loss"] = to_np(loss)
+        return metrics
