@@ -67,7 +67,7 @@ class Logger:
 
 def extract_best_from_json(logdir):
     to_minimize = ["recon_error", "reward_error", "ai_mortality"]
-    to_maximize = ["cwpdis", "ess", "mortality_decrease"]
+    to_maximize = ["v_cwpdis", "ess", "mortality_decrease"]
 
     best = {k: float("inf") for k in to_minimize}
     best.update({k: float("-inf") for k in to_maximize})
