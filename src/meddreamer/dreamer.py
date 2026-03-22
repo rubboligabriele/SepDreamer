@@ -38,7 +38,7 @@ class Dreamer(nn.Module):
             self._eval_log("all", epoch)
     
     def eval(self, episodes, epoch):
-        metrics = {"epoch": epoch}
+        metrics = {"step": epoch}
         ess = 0
         v_cwpdis = 0
         imag_rewards = 0
@@ -68,16 +68,17 @@ class Dreamer(nn.Module):
             embed = unflatten(embed)
             phys_action = data["action"].detach().clone()
             is_first = data["is_first"].detach().clone()
+
+            if phys_action.shape[1] <= 5:
+                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
+                continue
+
             states, _ = self._wm.dynamics.observe(
                     embed[:, :5], phys_action[:, :5], is_first[:, :5]
                 )
 
             # evaluate the world model
             init = {k: v[:, -1] for k, v in states.items()}
-
-            if phys_action.shape[1] <= 5:
-                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
-                continue
 
             prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
             reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
