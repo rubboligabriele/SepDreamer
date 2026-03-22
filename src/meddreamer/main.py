@@ -16,7 +16,7 @@ from src.meddreamer.dreamer import Dreamer, MedDreamer
 to_np = lambda x: x.detach().cpu().numpy()
 
 def make_dataset(episodes, config):
-    generator = tools.sample_episodes(episodes, config.train_batch_length)
+    generator = tools.sample_episodes(episodes, config.train_batch_length, seed=config.seed)
     dataset = tools.from_generator(generator, config.batch_size)
     return dataset
 
