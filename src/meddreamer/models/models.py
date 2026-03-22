@@ -645,25 +645,27 @@ class BehaviorPolicy(nn.Module):
         else:
             feat_size = config.dyn_stoch + config.dyn_deter
 
+        bp = config.behavior_model
+
         self.policy = networks.MLP(
             feat_size,
             (config.num_actions,),
-            config.actor["layers"],
+            bp["layers"],
             config.units,
             config.act,
             config.norm,
-            dist="onehot",
-            unimix_ratio=config.actor.get("unimix_ratio", 0.0),
-            outscale=config.actor["outscale"],
+            dist=bp.get("dist", "onehot"),
+            unimix_ratio=bp.get("unimix_ratio", 0.0),
+            outscale=bp.get("outscale", 1.0),
             name="BehaviorPolicy",
         )
 
         self._opt = tools.Optimizer(
             "behavior",
             self.policy.parameters(),
-            lr=config.actor["lr"],
-            eps=config.actor["eps"],
-            clip=config.actor["grad_clip"],
+            lr=bp.get("lr", 1e-4),
+            eps=bp.get("eps", 1e-8),
+            clip=bp.get("grad_clip", 100.0),
             wd=config.weight_decay,
             opt=config.opt,
         )
@@ -672,10 +674,7 @@ class BehaviorPolicy(nn.Module):
         return self.policy(feat)
 
     def train_batch(self, feat, action_onehot):
-        """
-        feat: [B, T, D] or [N, D]
-        action_onehot: [B, T, A] or [N, A]
-        """
+
         if feat.dim() == 3:
             feat = feat.reshape(-1, feat.shape[-1])
         if action_onehot.dim() == 3:
@@ -683,8 +682,24 @@ class BehaviorPolicy(nn.Module):
 
         with tools.RequiresGrad(self.policy):
             dist = self.policy(feat)
+
             loss = -dist.log_prob(action_onehot).mean()
+
             metrics = self._opt(loss, self.policy.parameters(), retain_graph=False)
 
+        # metrics
+        with torch.no_grad():
+            pred = dist.mode().argmax(-1)
+            true = action_onehot.argmax(-1)
+
+            accuracy = (pred == true).float().mean()
+
+            p_clin = torch.exp(dist.log_prob(action_onehot)).mean()
+            entropy = dist.entropy().mean()
+
         metrics["behavior_loss"] = to_np(loss)
+        metrics["behavior_acc"] = to_np(accuracy)
+        metrics["behavior_avg_p"] = to_np(p_clin)
+        metrics["behavior_entropy"] = to_np(entropy)
+
         return metrics
