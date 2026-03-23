@@ -543,8 +543,11 @@ class Dreamer(nn.Module):
     def _train_behavior(self, data):
         metrics = {}
 
-        post, embed, data = self._wm._load(data)
-        # embed: [B, T, D_embed]
+        self._behavior_policy.train()
+        self._wm.eval()
+
+        with torch.no_grad():
+            post, embed, data = self._wm._load(data)
 
         mets = self._behavior_policy.train_batch(embed, data["action"])
         metrics.update(mets)
