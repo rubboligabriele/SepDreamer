@@ -40,8 +40,6 @@ class Dreamer(nn.Module):
     
     def eval(self, episodes, epoch):
         metrics = {"step": epoch}
-        ess = 0
-        v_cwpdis = 0
         imag_rewards = 0
         true_mortality = 0
         phys_episode_returns = []
@@ -53,103 +51,130 @@ class Dreamer(nn.Module):
         full_mort = []
         valid_episodes = 0
         features_dict = {"ori_feat": [], "recon_feat": []}
-        
-        for stay_id, data in tqdm(episodes.items()):
-            data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
-            B, T, _ = data["features"].shape
-            data = self._wm.preprocess(data)
-            flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-            unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
-            features = flatten(data["features"])
-            if self._config.fm["use_fm"]:
-                delta = flatten(data["delta"]) 
-            else:
-                delta = None
-            embed = self._wm.encoder(features, delta)
-            embed = unflatten(embed)
-            phys_action = data["action"].detach().clone()
-            is_first = data["is_first"].detach().clone()
+        ope_trajs = []
 
-            if phys_action.shape[1] <= 5:
-                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
-                continue
+        self._wm.eval()
+        self._task_behavior.eval()
+        self._behavior_policy.eval()
 
-            valid_episodes += 1
+        with torch.no_grad():
+            for stay_id, data in tqdm(episodes.items()):
+                data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
+                B, T, _ = data["features"].shape
+                data = self._wm.preprocess(data)
+                flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
+                unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
 
-            states, _ = self._wm.dynamics.observe(
+                features = flatten(data["features"])
+                if self._config.fm["use_fm"]:
+                    delta = flatten(data["delta"])
+                else:
+                    delta = None
+
+                embed = self._wm.encoder(features, delta)
+                embed = unflatten(embed)
+
+                phys_action = data["action"].detach().clone()
+                is_first = data["is_first"].detach().clone()
+
+                if phys_action.shape[1] <= 5:
+                    print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
+                    continue
+
+                valid_episodes += 1
+
+                states, _ = self._wm.dynamics.observe(
                     embed[:, :5], phys_action[:, :5], is_first[:, :5]
                 )
 
-            # evaluate the world model
-            init = {k: v[:, -1] for k, v in states.items()}
+                init = {k: v[:, -1] for k, v in states.items()}
 
-            prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
-            reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
-            def cont_penalty(cont_pred, a = 0.01, b = 0.01, c = 0.001):
-                # Penalty: died=-a, discharged=+b, ICU=-c
-                weights = torch.tensor([-a, b, -c], device=cont_pred.device)
-                return weights[cont_pred.argmax(-1)]
-            reward = reward_prior
-            # reward = reward_prior + cont_penalty(self._wm.heads["cont"](self._wm.dynamics.get_feat(prior)).mode()).unsqueeze(-1)
-            phys_episode_return = to_np(reward.sum(dim=1).squeeze())
-            phys_episode_returns.append(phys_episode_return)
-            mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
+                prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
+                reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
+                reward = reward_prior
 
-            imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(init, self._task_behavior.actor, 50)
-            imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()   
-            imag_rewards += float(to_np(imag_reward.sum()))
+                phys_episode_return = to_np(reward.sum(dim=1).squeeze())
+                phys_episode_returns.append(phys_episode_return)
+                mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
 
-            recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
-            openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
-            recon_feature = torch.cat([recon[:, :5], openl], 1)
-            features_dict["ori_feat"].append(to_np(data["features"]))
-            features_dict["recon_feat"].append(to_np(recon_feature))
+                imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(
+                    init, self._task_behavior.actor, 50
+                )
+                imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()
+                imag_rewards += float(to_np(imag_reward.sum()))
 
-            actions = []
-            clin_probs = []
-            ai_episode_return = 0
-            _, T, _, _ = prior["stoch"].shape
+                recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
+                openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
+                recon_feature = torch.cat([recon[:, :5], openl], 1)
+                features_dict["ori_feat"].append(to_np(data["features"]))
+                features_dict["recon_feat"].append(to_np(recon_feature))
 
-            for t in range(T):
-                init = {k: v[:, t] for k, v in prior.items()}
-                feat = self._wm.dynamics.get_feat(init)
-                inp = feat.detach()
+                actions = []
+                ai_episode_return = 0
+                pi_ai_clin_list = []
+                pi_b_clin_list = []
+                reward_list = []
 
-                actor_dist = self._task_behavior.actor(inp)   # AI policy distribution
-                action = actor_dist.sample()                  # AI sampled action
-                actions.append(to_np(action))
+                _, T_roll, _, _ = prior["stoch"].shape
 
-                clin_action_onehot = phys_action[:, 5 + t]    # medician action
-                logp_clin = actor_dist.log_prob(clin_action_onehot)   # log pi_AI(a_clin | s_t)
-                p_clin = torch.exp(logp_clin)                 # pi_AI(a_clin | s_t)
-                clin_probs.append(to_np(p_clin))
+                for t in range(T_roll):
+                    init_t = {k: v[:, t] for k, v in prior.items()}
+                    feat = self._wm.dynamics.get_feat(init_t)
+                    inp = feat.detach()
 
-                succ = self._wm.dynamics.img_step(init, action)
-                ai_value = self._wm.heads["reward"](self._wm.dynamics.get_feat(succ).detach()).mode()
-                ai_episode_return += to_np(ai_value.squeeze())
+                    # AI policy
+                    ai_dist = self._task_behavior.actor(inp)
+                    action = ai_dist.sample()
+                    actions.append(to_np(action))
 
-            actions = np.stack(actions, axis=1)
-            clin_probs = np.stack(clin_probs, axis=1)
-            
-            ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
-            phys_actions.append(np.argmax(to_np(phys_action[0, 5:]), axis=-1))
-            sofas.append(to_np(data["sofa"][0, 5:]))
-            full_mort.append(to_np(data["mortality"][0, 5:]))
+                    clin_action_onehot = phys_action[:, 5 + t]
 
-            ai_episode_returns.append(ai_episode_return)
+                    # pi_ai(a_clin | s_t)
+                    logp_ai = ai_dist.log_prob(clin_action_onehot)
+                    pi_ai = torch.exp(logp_ai)
 
-            v_cwpdis_per_traj, ess_per_traj = tools.cwpdis_ess_eval(
-                clin_probs, data["reward"][:, 5:], gamma=0.99
-            )
-            v_cwpdis += v_cwpdis_per_traj
-            ess += ess_per_traj
+                    # pi_b(a_clin | s_t)
+                    logp_b = tools.behavior_log_prob(self._behavior_policy, inp, clin_action_onehot)
+                    pi_b = torch.exp(logp_b)
 
-            if data["mortality"].any() == 1:
-                true_mortality += 1
+                    pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
+                    pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
+
+                    # observed reward for OPE
+                    reward_t = float(to_np(data["reward"][:, 5 + t].squeeze()))
+                    reward_list.append(reward_t)
+
+                    # model-based AI return for mortality-vs-return analysis
+                    succ = self._wm.dynamics.img_step(init_t, action)
+                    ai_value = self._wm.heads["reward"](
+                        self._wm.dynamics.get_feat(succ).detach()
+                    ).mode()
+                    ai_episode_return += to_np(ai_value.squeeze())
+
+                actions = np.stack(actions, axis=1)
+                ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
+                phys_actions.append(np.argmax(to_np(phys_action[0, 5:]), axis=-1))
+                sofas.append(to_np(data["sofa"][0, 5:]))
+                full_mort.append(to_np(data["mortality"][0, 5:]))
+                ai_episode_returns.append(ai_episode_return)
+
+                traj_ope = tools.compute_ope_trajectory(
+                    pi_ai_clin_list,
+                    pi_b_clin_list,
+                    reward_list,
+                    gamma=self._config.discount,
+                )
+                if traj_ope is not None:
+                    ope_trajs.append(traj_ope)
+
+                if data["mortality"].any() == 1:
+                    true_mortality += 1
 
         if valid_episodes == 0:
             print("No valid episodes for evaluation.", flush=True)
             return
+
+        ope_metrics = tools.finalize_ope(ope_trajs)
 
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
@@ -158,35 +183,52 @@ class Dreamer(nn.Module):
         sofas = np.concatenate(sofas, axis=0)
         full_mort = np.concatenate(full_mort, axis=0)
         mortalities = np.array(mortalities, dtype=np.float32)
-        fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(phys_episode_returns, mortalities)
+
+        fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(
+            phys_episode_returns, mortalities
+        )
         fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
 
-        ai_mortality, ai_std = tools.calculate_esmitated_mortality(ai_episode_returns, bin_centers, smoothed, smoothed_sem)
+        ai_mortality, ai_std = tools.calculate_esmitated_mortality(
+            ai_episode_returns, bin_centers, smoothed, smoothed_sem
+        )
         true_mortality = true_mortality / valid_episodes
         mortality_decrease = true_mortality - ai_mortality
+
         metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
         metrics["ai_mortality"] = round(ai_mortality * 100, 2)
         metrics["true_mortality"] = true_mortality
-        metrics["v_cwpdis"] = to_np(v_cwpdis)/ valid_episodes
-        metrics["ess"] = to_np(ess)/ valid_episodes
+
+        # OPE metrics
+        metrics["wis"] = ope_metrics["wis"]
+        metrics["pdwis"] = ope_metrics["pdwis"]
+        metrics["wpdis"] = ope_metrics["wpdis"]
+        metrics["cwpdis"] = ope_metrics["cwpdis"]
+        metrics["ess"] = ope_metrics["ess"]
+
+        # backward compatibility with old code
+        metrics["v_cwpdis"] = ope_metrics["cwpdis"]
+
         metrics["imag_episode_return"] = to_np(imag_rewards) / valid_episodes
         metrics["ai_episode_return"] = float(ai_episode_returns.mean())
 
-        data = {
+        data_out = {
             "mortality": full_mort,
             "phys_action": phys_actions,
             "ai_action": ai_actions,
-            "sofa": sofas
+            "sofa": sofas,
         }
-        df = pd.DataFrame(data)
-        df.to_csv(os.path.join(self._logdir, f"result_data_{epoch}.csv"), index=False) # results for each transition -> action distribution plot
+        df = pd.DataFrame(data_out)
+        df.to_csv(os.path.join(self._logdir, f"result_data_{epoch}.csv"), index=False)
 
-        np.savez(os.path.join(self._logdir, f"phys_and_mortality_{epoch}.npz"), # episode return and mortality per trajectory -> mortality vs return plot
-                phys=phys_episode_returns, 
-                mort=mortalities)
+        np.savez(
+            os.path.join(self._logdir, f"phys_and_mortality_{epoch}.npz"),
+            phys=phys_episode_returns,
+            mort=mortalities,
+        )
 
-        with (self._logdir / f"metrics.jsonl").open("a") as f:
-            f.write(json.dumps(metrics) + "\n") # OPE metrics and estimated mortality
+        with (self._logdir / "metrics.jsonl").open("a") as f:
+            f.write(json.dumps(metrics) + "\n")
 
     def eval_wm(self, episodes, epoch):
         phys_episode_returns = []
@@ -251,115 +293,137 @@ class Dreamer(nn.Module):
         with open(os.path.join(self._logdir, f"result_dict_{epoch}.pkl"), 'wb') as f:
             pickle.dump(features_dict, f)
 
-    def _eval(self, episodes): 
-        # to check if the world model is imagining correctly and reconstructing the image correctly
+    def _eval(self, episodes):
         metrics = {}
         images = {}
         valid_episodes = 0
         cont_acc = 0
         recon_error = 0
         reward_error = 0
-        ess = 0
-        v_cwpdis = 0
+        true_mortality = 0
+        imag_rewards = 0
+
         phys_episode_returns = []
         ai_episode_returns = []
         ai_actions = []
         mortalities = []
-        true_mortality = 0
-        imag_rewards = 0
+        ope_trajs = []
+
         self._wm.eval()
-        
-        for stay_id, data in episodes.items():
-            data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
-            B, T, _ = data["features"].shape
-            data = self._wm.preprocess(data)
-            flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-            unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
-            features = flatten(data["features"])
-            if self._config.fm["use_fm"]:
-                delta = flatten(data["delta"]) 
-            else:
-                delta = None
-            embed = self._wm.encoder(features, delta)
-            embed = unflatten(embed)
-            phys_action = data["action"].detach().clone()
-            is_first = data["is_first"].detach().clone()
-            states, _ = self._wm.dynamics.observe(
+        self._task_behavior.eval()
+        self._behavior_policy.eval()
+
+        with torch.no_grad():
+            for stay_id, data in episodes.items():
+                data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
+                B, T, _ = data["features"].shape
+                data = self._wm.preprocess(data)
+                flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
+                unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
+
+                features = flatten(data["features"])
+                if self._config.fm["use_fm"]:
+                    delta = flatten(data["delta"])
+                else:
+                    delta = None
+
+                embed = self._wm.encoder(features, delta)
+                embed = unflatten(embed)
+
+                phys_action = data["action"].detach().clone()
+                is_first = data["is_first"].detach().clone()
+
+                states, _ = self._wm.dynamics.observe(
                     embed[:, :5], phys_action[:, :5], is_first[:, :5]
                 )
 
-            # evaluate the world model
-            recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
-            reward_post = self._wm.heads["reward"](self._wm.dynamics.get_feat(states)).mode()
-            cont_post = self._wm.heads["cont"](self._wm.dynamics.get_feat(states)).mode()
-            init = {k: v[:, -1] for k, v in states.items()}
+                recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
+                reward_post = self._wm.heads["reward"](self._wm.dynamics.get_feat(states)).mode()
+                cont_post = self._wm.heads["cont"](self._wm.dynamics.get_feat(states)).mode()
+                init = {k: v[:, -1] for k, v in states.items()}
 
-            if phys_action.shape[1] <= 5:
-                print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
-                continue
+                if phys_action.shape[1] <= 5:
+                    print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
+                    continue
 
-            valid_episodes += 1
+                valid_episodes += 1
 
-            prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
-            openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
-            reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
-            phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
-            cont_prior = self._wm.heads["cont"](self._wm.dynamics.get_feat(prior)).mode()
-            # observation is given until 5 steps
-            model = torch.cat([recon[:, :5], openl], 1)
-            comb_reward = torch.cat([reward_post[:, :5], reward_prior], 1)
-            comb_cont = torch.cat([cont_post[:, :5], cont_prior], 1)
-            error = ((model - data["features"]) ** 2) * data["mask"]
-            recon_error += (error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)).mean()
-            reward_error += ((comb_reward - data["reward"]) ** 2).mean()
-            cont_acc += tools.compute_accuracy(comb_cont, data["cont"])
-            
-            if self._config.mode != "world_model":
-                # evaluate rollouts
-                imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(init, self._task_behavior.actor, 50)
-                imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()   
-                imag_rewards += float(to_np(imag_reward.sum()))
+                prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
+                openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
+                reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
+                phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
+                cont_prior = self._wm.heads["cont"](self._wm.dynamics.get_feat(prior)).mode()
 
-                # only evaluate one transition otherwise it's not a trajectory and cannot be sent to critic for value calculation
-                actions = []
-                clin_probs = []
-                ai_episode_return = 0
-                _, T, _, _ = prior["stoch"].shape
+                model = torch.cat([recon[:, :5], openl], 1)
+                comb_reward = torch.cat([reward_post[:, :5], reward_prior], 1)
+                comb_cont = torch.cat([cont_post[:, :5], cont_prior], 1)
 
-                for t in range(T):
-                    init = {k: v[:, t] for k, v in prior.items()}
-                    feat = self._wm.dynamics.get_feat(init)
-                    inp = feat.detach()
+                error = ((model - data["features"]) ** 2) * data["mask"]
+                recon_error += (error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)).mean()
+                reward_error += ((comb_reward - data["reward"]) ** 2).mean()
+                cont_acc += tools.compute_accuracy(comb_cont, data["cont"])
 
-                    actor_dist = self._task_behavior.actor(inp)   # AI policy distribution
-                    action = actor_dist.sample()                  # AI sampled action
-                    actions.append(to_np(action))
+                if self._config.mode != "world_model":
+                    imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(
+                        init, self._task_behavior.actor, 50
+                    )
+                    imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()
+                    imag_rewards += float(to_np(imag_reward.sum()))
 
-                    clin_action_onehot = phys_action[:, 5 + t]    # medician action
-                    logp_clin = actor_dist.log_prob(clin_action_onehot)   # log pi_AI(a_clin | s_t)
-                    p_clin = torch.exp(logp_clin)                 # pi_AI(a_clin | s_t)
-                    clin_probs.append(to_np(p_clin))
+                    actions = []
+                    ai_episode_return = 0
+                    pi_ai_clin_list = []
+                    pi_b_clin_list = []
+                    reward_list = []
 
-                    succ = self._wm.dynamics.img_step(init, action)
-                    ai_value = self._wm.heads["reward"](self._wm.dynamics.get_feat(succ).detach()).mode()
-                    ai_episode_return += to_np(ai_value.squeeze())
+                    _, T_roll, _, _ = prior["stoch"].shape
 
-                actions = np.stack(actions, axis=1)
-                clin_probs = np.stack(clin_probs, axis=1)
-                
-                ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
-                ai_episode_returns.append(ai_episode_return)
+                    for t in range(T_roll):
+                        init_t = {k: v[:, t] for k, v in prior.items()}
+                        feat = self._wm.dynamics.get_feat(init_t)
+                        inp = feat.detach()
 
-                v_cwpdis_per_traj, ess_per_traj = tools.cwpdis_ess_eval(
-                    clin_probs, data["reward"][:, 5:], gamma=0.99
-                )
-                v_cwpdis += v_cwpdis_per_traj
-                ess += ess_per_traj
+                        ai_dist = self._task_behavior.actor(inp)
+                        action = ai_dist.sample()
+                        actions.append(to_np(action))
 
-                phys_episode_returns.append(phys_episode_return)
-                mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
-                if data["mortality"].any() == 1:
-                    true_mortality += 1   
+                        clin_action_onehot = phys_action[:, 5 + t]
+
+                        logp_ai = ai_dist.log_prob(clin_action_onehot)
+                        pi_ai = torch.exp(logp_ai)
+
+                        logp_b = tools.behavior_log_prob(self._behavior_policy, inp, clin_action_onehot)
+                        pi_b = torch.exp(logp_b)
+
+                        pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
+                        pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
+
+                        reward_t = float(to_np(data["reward"][:, 5 + t].squeeze()))
+                        reward_list.append(reward_t)
+
+                        succ = self._wm.dynamics.img_step(init_t, action)
+                        ai_value = self._wm.heads["reward"](
+                            self._wm.dynamics.get_feat(succ).detach()
+                        ).mode()
+                        ai_episode_return += to_np(ai_value.squeeze())
+
+                    actions = np.stack(actions, axis=1)
+                    ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
+                    ai_episode_returns.append(ai_episode_return)
+
+                    traj_ope = tools.compute_ope_trajectory(
+                        pi_ai_clin_list,
+                        pi_b_clin_list,
+                        reward_list,
+                        gamma=self._config.discount,
+                    )
+                    if traj_ope is not None:
+                        ope_trajs.append(traj_ope)
+
+                    phys_episode_returns.append(phys_episode_return)
+                    mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
+                    if data["mortality"].any() == 1:
+                        true_mortality += 1
 
         if valid_episodes == 0:
             print("No valid episodes for evaluation.", flush=True)
@@ -370,6 +434,8 @@ class Dreamer(nn.Module):
         metrics["cont_acc"] = to_np(cont_acc) / valid_episodes
 
         if self._config.mode != "world_model":
+            ope_metrics = tools.finalize_ope(ope_trajs)
+
             phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
             ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
             mortalities = np.array(mortalities, dtype=np.float32)
@@ -391,19 +457,28 @@ class Dreamer(nn.Module):
             metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
             metrics["imag_episode_return"] = imag_rewards / valid_episodes
             metrics["ai_episode_return"] = float(ai_episode_returns.mean())
-            metrics["v_cwpdis"] = float(v_cwpdis) / valid_episodes
-            metrics["ess"] = float(ess) / valid_episodes
+
+            metrics["wis"] = ope_metrics["wis"]
+            metrics["pdwis"] = ope_metrics["pdwis"]
+            metrics["wpdis"] = ope_metrics["wpdis"]
+            metrics["cwpdis"] = ope_metrics["cwpdis"]
+            metrics["ess"] = ope_metrics["ess"]
+
+            # backward compatibility
+            metrics["v_cwpdis"] = ope_metrics["cwpdis"]
+
             metrics["ai_action_min"] = ai_actions.min()
             metrics["ai_action_max"] = ai_actions.max()
             metrics["ai_action_mean"] = ai_actions.mean()
-        
+
         for name, value in metrics.items():
-            if not name in self._metrics.keys():
+            if name not in self._metrics:
                 self._metrics[name] = [value]
             else:
                 self._metrics[name].append(value)
+
         for name, value in images.items():
-            if not name in self._images.keys():
+            if name not in self._images:
                 self._images[name] = [value]
             else:
                 self._images[name].append(value)
