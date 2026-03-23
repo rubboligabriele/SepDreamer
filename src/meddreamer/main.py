@@ -136,6 +136,7 @@ def main(config):
         elif config.mode == "policy_p1":
             if config.training:
                 tools.load_model(agent, "wm", config.ckptdir, config.ckptepoch, config.device)
+                tools.load_model(agent, "behavior_policy", config.behavior_ckptdir, config.behavior_ckptepoch, config.device)
                 agent.train_policy(config.epochs, use_history=True)
             else:
                 for epoch in range(0, config.epochs + 1, config.save_every):
