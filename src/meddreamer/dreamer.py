@@ -30,8 +30,7 @@ class Dreamer(nn.Module):
         self._eval_dataset = eval_dataset
         self._wm = models.WorldModel(config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
-        embed_dim = self._wm.embed_size
-        self._behavior_policy = models.BehaviorPolicy(config, embed_dim)
+        self._behavior_policy = models.BehaviorPolicy(config)
     
     def train(self, epochs):  # similar to the original train function in trainer
         for epoch in trange(0, epochs + 1, desc="Training"):
@@ -426,12 +425,9 @@ class Dreamer(nn.Module):
                 data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
 
                 post, embed, data = self._wm._load(data)
-                action = data["action"]   # [B, T, A]
-
-                if embed.shape[1] == 0:
-                    continue
-
-                dist = self._behavior_policy(embed)   # sequence input
+                feat = self._wm.dynamics.get_feat(post)
+                action = data["action"]
+                dist = self._behavior_policy(feat)
 
                 loss = -dist.log_prob(action)         # [B, T]
                 total_loss += loss.sum().item()
@@ -548,8 +544,9 @@ class Dreamer(nn.Module):
 
         with torch.no_grad():
             post, embed, data = self._wm._load(data)
+            feat = self._wm.dynamics.get_feat(post)
 
-        mets = self._behavior_policy.train_batch(embed, data["action"])
+        mets = self._behavior_policy.train_batch(feat, data["action"])
         metrics.update(mets)
 
         for name, value in metrics.items():

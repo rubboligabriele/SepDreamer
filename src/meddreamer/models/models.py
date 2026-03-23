@@ -636,23 +636,25 @@ class ImagBehavior(nn.Module):
 
 
 class BehaviorPolicy(nn.Module):
-    def __init__(self, config, embed_dim):
+    def __init__(self, config):
         super().__init__()
         self._config = config
-        bp = config.behavior_model
 
-        hidden_size = bp.get("hidden_size", 16)
-        num_layers = bp.get("num_layers", 1)
+        if config.dyn_discrete:
+            input_dim = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
+        else:
+            input_dim = config.dyn_stoch + config.dyn_deter
 
         self.lstm = nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
+            input_size=input_dim,
+            hidden_size=16,
+            num_layers=1,
+            batch_first=True
         )
 
-        self.head = nn.Linear(hidden_size, config.num_actions)
+        self.head = nn.Linear(16, config.num_actions)
 
+        bp = config.behavior_model
         self._opt = tools.Optimizer(
             "behavior",
             self.parameters(),
@@ -663,22 +665,23 @@ class BehaviorPolicy(nn.Module):
             opt=config.opt,
         )
 
-    def forward(self, embed):
-        h, _ = self.lstm(embed)              # [B, T, H]
-        logits = self.head(h)                # [B, T, A]
+    def forward(self, feat):
+        h, _ = self.lstm(feat)
+        logits = self.head(h)
         dist = tools.OneHotDist(logits)
         return dist
 
-    def train_batch(self, embed, action_onehot):
+    def train_batch(self, feat, action_onehot):
+        self.train()
+
         with tools.RequiresGrad(self):
-            dist = self(embed)
+            dist = self(feat)
             loss = -dist.log_prob(action_onehot).mean()
-            metrics = self._opt(loss, self.parameters())
+            metrics = self._opt(loss, self.parameters(), retain_graph=False)
 
         with torch.no_grad():
-            pred = dist.mode().argmax(-1)          # [B, T]
-            true = action_onehot.argmax(-1)        # [B, T]
-
+            pred = dist.mode().argmax(-1)
+            true = action_onehot.argmax(-1)
             accuracy = (pred == true).float().mean()
             p_clin = torch.exp(dist.log_prob(action_onehot)).mean()
             entropy = dist.entropy().mean()
@@ -687,5 +690,4 @@ class BehaviorPolicy(nn.Module):
         metrics["behavior_acc"] = to_np(accuracy)
         metrics["behavior_avg_p"] = to_np(p_clin)
         metrics["behavior_entropy"] = to_np(entropy)
-
         return metrics
