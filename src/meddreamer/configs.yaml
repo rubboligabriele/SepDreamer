@@ -121,6 +121,8 @@ ventilation:
 p1-sepsis:
   mode: 'policy_p1'
   ckptepoch: 10000
+  behavior_ckptdir: 'your/own/path/to/behavior_checkpoints'
+  behavior_ckptepoch: 2000
   seed: 0
   epochs: 5000
   eval_every: 100
