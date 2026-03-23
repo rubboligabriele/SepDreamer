@@ -67,7 +67,15 @@ class Logger:
 
 def extract_best_from_json(logdir):
     to_minimize = ["recon_error", "reward_error", "ai_mortality"]
-    to_maximize = ["v_cwpdis", "ess", "mortality_decrease"]
+
+    to_maximize = [
+        "wis",
+        "pdwis",
+        "wpdis",
+        "cwpdis",
+        "ess",
+        "mortality_decrease",
+    ]
 
     best = {k: float("inf") for k in to_minimize}
     best.update({k: float("-inf") for k in to_maximize})
@@ -86,7 +94,6 @@ def extract_best_from_json(logdir):
                     best[k] = record[k]
                     best_steps[k] = step
 
-    # Combine values and steps
     summary = {}
     for k in best:
         summary[k] = best[k]
@@ -1035,29 +1042,6 @@ def calculate_esmitated_mortality(ai_values, bin_centers, smoothed, smoothed_sem
     ai_std = smoothed_sem[idx]
     return ai_mortality, ai_std
 
-def cwpdis_ess_eval(ai_action, phys_action, reward, gamma=0.99):
-    # Convert one-hot or logits to discrete action indices
-    ai_action = np.argmax(ai_action, axis=-1)     # [T] or [B, T]
-    phys_action = np.argmax(to_np(phys_action), axis=-1) # [T] or [B, T]
-
-    # Flatten everything to [T] if needed
-    ai_action = ai_action.flatten()
-    phys_action = phys_action.flatten()
-    reward = reward.flatten()
-
-    # Concordance: whether AI action matches clinician action
-    concordant = (ai_action == phys_action)
-
-    v_cwpdis = 0.0
-    ess = 0.0
-
-    for t in range(len(concordant)):
-        if concordant[t]:
-            v_cwpdis += (gamma ** (t + 1)) * reward[t]
-            ess += 1
-
-    return v_cwpdis, ess
-
 def compute_accuracy(logits, targets):
     """
     logits: shape [B, T, 1] or [B, T, C]
@@ -1074,3 +1058,130 @@ def compute_accuracy(logits, targets):
     total = targets.size(1)
     
     return round(correct / total * 100, 2)
+
+def behavior_log_prob(behavior_policy, feat, action_onehot):
+    try:
+        dist = behavior_policy(feat.unsqueeze(1))
+        logp = dist.log_prob(action_onehot.unsqueeze(1))
+        if logp.ndim > 1:
+            logp = logp.squeeze(1)
+        return logp
+    except Exception:
+        dist = behavior_policy(feat)
+        return dist.log_prob(action_onehot)
+
+def compute_ope_trajectory(pi_ai_list, pi_b_list, reward_list, gamma):
+    """
+    Build per-trajectory OPE quantities.
+
+    Args:
+        pi_ai_list: list of pi(a_clin | s_t) under AI policy
+        pi_b_list:  list of mu(a_clin | s_t) under behavior policy
+        reward_list: list of observed rewards r_t from dataset
+        gamma: discount factor
+
+    Returns:
+        dict with per-trajectory quantities for WIS / PDIS / CWPDIS / ESS
+    """
+    pi_ai = np.asarray(pi_ai_list, dtype=np.float64).reshape(-1)
+    pi_b = np.asarray(pi_b_list, dtype=np.float64).reshape(-1)
+    rewards = np.asarray(reward_list, dtype=np.float64).reshape(-1)
+
+    T = len(rewards)
+    if T == 0:
+        return None
+
+    # Stepwise importance ratios
+    rho = pi_ai / (pi_b + 1e-8)
+
+    # Cumulative ratios up to each timestep
+    cum_rho = np.cumprod(rho)
+
+    # Discounted rewards gamma^t * r_t
+    discounts = gamma ** np.arange(T, dtype=np.float64)
+    disc_rewards = discounts * rewards
+
+    # Ordinary discounted trajectory return
+    traj_return = disc_rewards.sum()
+
+    # Trajectory-wise WIS uses final cumulative ratio
+    wis_weight = cum_rho[-1]
+
+    # Per-decision IS / PDIS contribution for this trajectory
+    wpdis = np.sum(cum_rho * disc_rewards)
+
+    return {
+        "rho": rho,                  # [T]
+        "cum_rho": cum_rho,          # [T]
+        "disc_rewards": disc_rewards,# [T]
+        "traj_return": traj_return,  # scalar
+        "wis_weight": wis_weight,    # scalar
+        "wpdis": wpdis,              # scalar
+    }
+
+
+
+def finalize_ope(ope_trajs):
+    """
+    Dataset-level OPE aggregation.
+
+    Returns:
+        wis    : trajectory-wise weighted importance sampling
+        pdwis  : per-decision weighted importance sampling
+        wpdis  : average per-trajectory per-decision IS
+        cwpdis : cumulative weighted per-decision IS
+        ess    : effective sample size from final trajectory weights
+    """
+    if len(ope_trajs) == 0:
+        return {
+            "wis": 0.0,
+            "pdwis": 0.0,
+            "wpdis": 0.0,
+            "cwpdis": 0.0,
+            "ess": 0.0,
+        }
+
+    final_weights = np.array([traj["wis_weight"] for traj in ope_trajs], dtype=np.float64)
+    traj_returns = np.array([traj["traj_return"] for traj in ope_trajs], dtype=np.float64)
+
+    # 1) Trajectory-wise WIS
+    wis = float(
+        np.sum(final_weights * traj_returns) / (np.sum(final_weights) + 1e-8)
+    )
+
+    # 2) WPDIS: average of trajectory-wise per-decision IS estimates
+    wpdis = float(np.mean([traj["wpdis"] for traj in ope_trajs]))
+
+    # 3) Per-decision weighted IS
+    max_len = max(len(traj["cum_rho"]) for traj in ope_trajs)
+    pdwis = 0.0
+    cwpdis = 0.0
+
+    for t in range(max_len):
+        num_reward = 0.0
+        den_weight = 0.0
+
+        for traj in ope_trajs:
+            if t < len(traj["cum_rho"]):
+                w_t = traj["cum_rho"][t]
+                r_t = traj["disc_rewards"][t]
+                num_reward += w_t * r_t
+                den_weight += w_t
+
+        if den_weight > 0:
+            step_est = num_reward / (den_weight + 1e-8)
+            pdwis += step_est
+            cwpdis += step_est
+
+    # 4) ESS from final trajectory weights
+    ess = float(
+        (np.sum(final_weights) ** 2) / (np.sum(final_weights ** 2) + 1e-8)
+    )
+
+    return {
+        "wis": wis,
+        "pdwis": float(pdwis),
+        "wpdis": wpdis,
+        "cwpdis": float(cwpdis),
+        "ess": ess,
+    }
