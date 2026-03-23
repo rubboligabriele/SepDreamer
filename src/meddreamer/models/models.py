@@ -636,33 +636,26 @@ class ImagBehavior(nn.Module):
 
 
 class BehaviorPolicy(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, embed_dim):
         super().__init__()
         self._config = config
-
-        if config.dyn_discrete:
-            feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
-        else:
-            feat_size = config.dyn_stoch + config.dyn_deter
-
         bp = config.behavior_model
 
-        self.policy = networks.MLP(
-            feat_size,
-            (config.num_actions,),
-            bp["layers"],
-            config.units,
-            config.act,
-            config.norm,
-            dist=bp.get("dist", "onehot"),
-            unimix_ratio=bp.get("unimix_ratio", 0.0),
-            outscale=bp.get("outscale", 1.0),
-            name="BehaviorPolicy",
+        hidden_size = bp.get("hidden_size", 16)
+        num_layers = bp.get("num_layers", 1)
+
+        self.lstm = nn.LSTM(
+            input_size=embed_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
         )
+
+        self.head = nn.Linear(hidden_size, config.num_actions)
 
         self._opt = tools.Optimizer(
             "behavior",
-            self.policy.parameters(),
+            self.parameters(),
             lr=bp.get("lr", 1e-4),
             eps=bp.get("eps", 1e-8),
             clip=bp.get("grad_clip", 100.0),
@@ -670,30 +663,23 @@ class BehaviorPolicy(nn.Module):
             opt=config.opt,
         )
 
-    def forward(self, feat):
-        return self.policy(feat)
+    def forward(self, embed):
+        h, _ = self.lstm(embed)              # [B, T, H]
+        logits = self.head(h)                # [B, T, A]
+        dist = tools.OneHotDist(logits)
+        return dist
 
-    def train_batch(self, feat, action_onehot):
-
-        if feat.dim() == 3:
-            feat = feat.reshape(-1, feat.shape[-1])
-        if action_onehot.dim() == 3:
-            action_onehot = action_onehot.reshape(-1, action_onehot.shape[-1])
-
-        with tools.RequiresGrad(self.policy):
-            dist = self.policy(feat)
-
+    def train_batch(self, embed, action_onehot):
+        with tools.RequiresGrad(self):
+            dist = self(embed)
             loss = -dist.log_prob(action_onehot).mean()
+            metrics = self._opt(loss, self.parameters())
 
-            metrics = self._opt(loss, self.policy.parameters(), retain_graph=False)
-
-        # metrics
         with torch.no_grad():
-            pred = dist.mode().argmax(-1)
-            true = action_onehot.argmax(-1)
+            pred = dist.mode().argmax(-1)          # [B, T]
+            true = action_onehot.argmax(-1)        # [B, T]
 
             accuracy = (pred == true).float().mean()
-
             p_clin = torch.exp(dist.log_prob(action_onehot)).mean()
             entropy = dist.entropy().mean()
 
