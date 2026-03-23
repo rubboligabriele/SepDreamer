@@ -30,7 +30,8 @@ class Dreamer(nn.Module):
         self._eval_dataset = eval_dataset
         self._wm = models.WorldModel(config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
-        self._behavior_policy = models.BehaviorPolicy(config)
+        embed_dim = self._wm.embed_size
+        self._behavior_policy = models.BehaviorPolicy(config, embed_dim)
     
     def train(self, epochs):  # similar to the original train function in trainer
         for epoch in trange(0, epochs + 1, desc="Training"):
@@ -424,38 +425,28 @@ class Dreamer(nn.Module):
             for stay_id, data in tqdm(episodes.items(), desc="Evaluating Behavior Policy"):
                 data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
 
-                # Reconstruct the features using the world model's decoder and get the latent representation
-                post, _, data = self._wm._load(data)
-                feat = self._wm.dynamics.get_feat(post)      # [B, T, D]
-                action = data["action"]                      # [B, T, A]
+                post, embed, data = self._wm._load(data)
+                action = data["action"]   # [B, T, A]
 
-                # Flatten
-                feat = feat.reshape(-1, feat.shape[-1])      # [N, D]
-                action = action.reshape(-1, action.shape[-1])# [N, A]
-
-                if feat.shape[0] == 0:
+                if embed.shape[1] == 0:
                     continue
 
-                dist = self._behavior_policy(feat)
+                dist = self._behavior_policy(embed)   # sequence input
 
-                # Average NLL of the clinical action
-                loss = -dist.log_prob(action)                # [N]
+                loss = -dist.log_prob(action)         # [B, T]
                 total_loss += loss.sum().item()
 
-                # Accuracy top-1
-                pred_idx = torch.argmax(dist.probs, dim=-1)  # [N]
-                true_idx = torch.argmax(action, dim=-1)      # [N]
+                pred_idx = torch.argmax(dist.probs, dim=-1)   # [B, T]
+                true_idx = torch.argmax(action, dim=-1)       # [B, T]
                 total_correct += (pred_idx == true_idx).sum().item()
 
-                # Probability assigned to the clinical action by the behavior policy
-                clin_prob = (dist.probs * action).sum(dim=-1)   # [N]
+                clin_prob = (dist.probs * action).sum(dim=-1) # [B, T]
                 total_clin_prob += clin_prob.sum().item()
 
-                # Mean entropy of the behavior policy's action distribution
-                entropy = dist.entropy()                     # [N]
+                entropy = dist.entropy()                      # [B, T]
                 total_entropy += entropy.sum().item()
 
-                total_steps += feat.shape[0]
+                total_steps += action.shape[0] * action.shape[1]
 
         if total_steps == 0:
             print("No valid steps for behavior evaluation.", flush=True)
@@ -553,9 +544,9 @@ class Dreamer(nn.Module):
         metrics = {}
 
         post, embed, data = self._wm._load(data)
-        feat = self._wm.dynamics.get_feat(post)   # [B, T, D]
+        # embed: [B, T, D_embed]
 
-        mets = self._behavior_policy.train_batch(feat, data["action"])
+        mets = self._behavior_policy.train_batch(embed, data["action"])
         metrics.update(mets)
 
         for name, value in metrics.items():
