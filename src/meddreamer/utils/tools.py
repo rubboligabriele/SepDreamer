@@ -1070,19 +1070,8 @@ def behavior_log_prob(behavior_policy, feat, action_onehot):
         dist = behavior_policy(feat)
         return dist.log_prob(action_onehot)
 
-def compute_ope_trajectory(pi_ai_list, pi_b_list, reward_list, gamma):
-    """
-    Build per-trajectory OPE quantities.
-
-    Args:
-        pi_ai_list: list of pi(a_clin | s_t) under AI policy
-        pi_b_list:  list of mu(a_clin | s_t) under behavior policy
-        reward_list: list of observed rewards r_t from dataset
-        gamma: discount factor
-
-    Returns:
-        dict with per-trajectory quantities for WIS / PDIS / CWPDIS / ESS
-    """
+def compute_ope_trajectory(pi_ai_list, pi_b_list, reward_list, gamma,
+                           prob_eps=1e-6, rho_max=100.0):
     pi_ai = np.asarray(pi_ai_list, dtype=np.float64).reshape(-1)
     pi_b = np.asarray(pi_b_list, dtype=np.float64).reshape(-1)
     rewards = np.asarray(reward_list, dtype=np.float64).reshape(-1)
@@ -1091,47 +1080,55 @@ def compute_ope_trajectory(pi_ai_list, pi_b_list, reward_list, gamma):
     if T == 0:
         return None
 
-    # Stepwise importance ratios
-    rho = pi_ai / (pi_b + 1e-8)
+    # Stabilize probabilities
+    pi_ai = np.clip(pi_ai, prob_eps, 1.0)
+    pi_b = np.clip(pi_b, prob_eps, 1.0)
 
-    # Cumulative ratios up to each timestep
+    # Importance ratios
+    rho_raw = pi_ai / pi_b
+    rho = np.clip(rho_raw, 0.0, rho_max)
+
+    # Cumulative ratios
     cum_rho = np.cumprod(rho)
 
-    # Discounted rewards gamma^t * r_t
     discounts = gamma ** np.arange(T, dtype=np.float64)
     disc_rewards = discounts * rewards
 
-    # Ordinary discounted trajectory return
     traj_return = disc_rewards.sum()
-
-    # Trajectory-wise WIS uses final cumulative ratio
     wis_weight = cum_rho[-1]
 
-    # Per-decision IS / PDIS contribution for this trajectory
-    wpdis = np.sum(cum_rho * disc_rewards)
+    # trajectory-level PDIS contribution
+    pdis = np.sum(cum_rho * disc_rewards)
 
     return {
-        "rho": rho,                  # [T]
-        "cum_rho": cum_rho,          # [T]
-        "disc_rewards": disc_rewards,# [T]
-        "traj_return": traj_return,  # scalar
-        "wis_weight": wis_weight,    # scalar
-        "wpdis": wpdis,              # scalar
+        "rho": rho,
+        "rho_raw": rho_raw,
+        "cum_rho": cum_rho,
+        "disc_rewards": disc_rewards,
+        "traj_return": traj_return,
+        "wis_weight": wis_weight,
+        "pdis": pdis,
+        "debug": {
+            "T": int(T),
+            "pi_ai_min": float(pi_ai.min()),
+            "pi_ai_max": float(pi_ai.max()),
+            "pi_b_min": float(pi_b.min()),
+            "pi_b_max": float(pi_b.max()),
+            "rho_raw_min": float(rho_raw.min()),
+            "rho_raw_max": float(rho_raw.max()),
+            "rho_min": float(rho.min()),
+            "rho_max": float(rho.max()),
+            "cum_rho_last": float(cum_rho[-1]),
+            "reward_sum": float(rewards.sum()),
+            "n_pi_b_lt_1e4": int(np.sum(pi_b < 1e-4)),
+            "n_pi_b_lt_1e6": int(np.sum(pi_b < 1e-6)),
+            "n_rho_gt_10": int(np.sum(rho_raw > 10)),
+            "n_rho_gt_100": int(np.sum(rho_raw > 100)),
+        }
     }
 
 
-
-def finalize_ope(ope_trajs):
-    """
-    Dataset-level OPE aggregation.
-
-    Returns:
-        wis    : trajectory-wise weighted importance sampling
-        pdwis  : per-decision weighted importance sampling
-        wpdis  : average per-trajectory per-decision IS
-        cwpdis : cumulative weighted per-decision IS
-        ess    : effective sample size from final trajectory weights
-    """
+def finalize_ope(ope_trajs, debug=False, top_k=5):
     if len(ope_trajs) == 0:
         return {
             "wis": 0.0,
@@ -1143,19 +1140,19 @@ def finalize_ope(ope_trajs):
 
     final_weights = np.array([traj["wis_weight"] for traj in ope_trajs], dtype=np.float64)
     traj_returns = np.array([traj["traj_return"] for traj in ope_trajs], dtype=np.float64)
+    traj_pdis = np.array([traj["pdis"] for traj in ope_trajs], dtype=np.float64)
 
-    # 1) Trajectory-wise WIS
+    # 1) WIS
     wis = float(
         np.sum(final_weights * traj_returns) / (np.sum(final_weights) + 1e-8)
     )
 
-    # 2) WPDIS: average of trajectory-wise per-decision IS estimates
-    wpdis = float(np.mean([traj["wpdis"] for traj in ope_trajs]))
+    # 2) trajectory-level average PDIS
+    wpdis = float(np.mean(traj_pdis))
 
-    # 3) Per-decision weighted IS
+    # 3) per-decision weighted IS
     max_len = max(len(traj["cum_rho"]) for traj in ope_trajs)
     pdwis = 0.0
-    cwpdis = 0.0
 
     for t in range(max_len):
         num_reward = 0.0
@@ -1169,19 +1166,45 @@ def finalize_ope(ope_trajs):
                 den_weight += w_t
 
         if den_weight > 0:
-            step_est = num_reward / (den_weight + 1e-8)
-            pdwis += step_est
-            cwpdis += step_est
+            pdwis += num_reward / (den_weight + 1e-8)
 
-    # 4) ESS from final trajectory weights
+    cwpdis = float(pdwis)
+
+    # 4) ESS
     ess = float(
         (np.sum(final_weights) ** 2) / (np.sum(final_weights ** 2) + 1e-8)
     )
 
+    if debug:
+        order = np.argsort(-np.abs(final_weights))
+        print("\n[OPE DEBUG] worst trajectories by |final weight|")
+        for rank, idx in enumerate(order[:top_k]):
+            print(f"rank={rank} idx={idx} debug={ope_trajs[idx]['debug']}")
+
     return {
-        "wis": wis,
+        "wis": float(wis),
         "pdwis": float(pdwis),
-        "wpdis": wpdis,
+        "wpdis": float(wpdis),
         "cwpdis": float(cwpdis),
-        "ess": ess,
+        "ess": float(ess),
     }
+
+def debug_ope_summary(ope_trajs):
+    if len(ope_trajs) == 0:
+        print("[OPE DEBUG] no trajectories")
+        return
+
+    pi_b_mins = np.array([traj["debug"]["pi_b_min"] for traj in ope_trajs], dtype=np.float64)
+    pi_ai_mins = np.array([traj["debug"]["pi_ai_min"] for traj in ope_trajs], dtype=np.float64)
+    rho_maxs = np.array([traj["debug"]["rho_raw_max"] for traj in ope_trajs], dtype=np.float64)
+    cum_last = np.array([traj["debug"]["cum_rho_last"] for traj in ope_trajs], dtype=np.float64)
+
+    print("\n[OPE DEBUG SUMMARY]")
+    print("num_trajs =", len(ope_trajs))
+    print("pi_b_min global min =", pi_b_mins.min())
+    print("pi_ai_min global min =", pi_ai_mins.min())
+    print("rho_raw_max global max =", rho_maxs.max())
+    print("cum_rho_last min =", cum_last.min())
+    print("cum_rho_last max =", cum_last.max())
+    print("num cum_rho_last > 1e3 =", int(np.sum(cum_last > 1e3)))
+    print("num cum_rho_last < 1e-3 =", int(np.sum(cum_last < 1e-3)))
