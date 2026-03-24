@@ -34,8 +34,10 @@ class Dreamer(nn.Module):
     
     def train(self, epochs):  # similar to the original train function in trainer
         for epoch in trange(0, epochs + 1, desc="Training"):
-            states = self._train_wm(next(self._train_dataset))
-            self._train_policy_through_imagination(states)
+            post, _, data = self._wm._load(next(self._train_dataset))
+            feat = self._wm.dynamics.get_feat(post)
+
+            self._train_policy(post, feat, data, use_history=True)
             self._eval_log("all", epoch)
     
     def eval(self, episodes, epoch):
@@ -83,11 +85,10 @@ class Dreamer(nn.Module):
 
                 valid_episodes += 1
 
-                states, _ = self._wm.dynamics.observe(
-                    embed[:, :5], phys_action[:, :5], is_first[:, :5]
-                )
+                full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first)
 
-                init = {k: v[:, -1] for k, v in states.items()}
+                states = {k: v[:, :5] for k, v in full_states.items()}
+                init = {k: v[:, 4] for k, v in full_states.items()}
 
                 prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
                 reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
@@ -117,34 +118,58 @@ class Dreamer(nn.Module):
 
                 _, T_roll, _, _ = prior["stoch"].shape
 
+                # -------- OPE on REAL states (post), from step 5 onward --------
+                for t in range(5, phys_action.shape[1] - 1):
+                    real_state_t = {k: v[:, t] for k, v in full_states.items()}
+                    feat_real = self._wm.dynamics.get_feat(real_state_t)
+                    inp_real = feat_real.detach()
+
+                    value_real = self._task_behavior.value(inp_real).mode()
+
+                    if len(ope_trajs) < 3 and t < 15:
+                        print(
+                            f"[value debug] stay={stay_id} t={t} "
+                            f"value={float(to_np(value_real.squeeze())):.4f}",
+                            flush=True,
+                        )
+
+                    clin_action_onehot = phys_action[:, t + 1]
+
+                    ai_dist_real = self._task_behavior.actor(inp_real)
+                    logp_ai = ai_dist_real.log_prob(clin_action_onehot)
+                    pi_ai = torch.exp(logp_ai)
+
+                    logp_b = tools.behavior_log_prob(self._behavior_policy, inp_real, clin_action_onehot)
+                    pi_b = torch.exp(logp_b)
+
+                    if len(ope_trajs) < 3 and t < 15:
+                        clin_idx = torch.argmax(clin_action_onehot, dim=-1).item()
+                        ai_top = torch.argmax(ai_dist_real.probs, dim=-1).item()
+                        b_dist_real = self._behavior_policy(inp_real)
+                        b_top = torch.argmax(b_dist_real.probs, dim=-1).item()
+
+                        print(
+                            f"[eval OPE debug] stay={stay_id} t={t} "
+                            f"clin={clin_idx} ai_top={ai_top} b_top={b_top} "
+                            f"pi_ai={float(to_np(pi_ai.squeeze())):.6e} "
+                            f"pi_b={float(to_np(pi_b.squeeze())):.6e}",
+                            flush=True,
+                        )
+
+                    pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
+                    pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
+                    reward_list.append(float(to_np(data["reward"][:, t + 1].squeeze())))
+
+                # -------- model-based rollout for policy behavior / return --------
                 for t in range(T_roll):
                     init_t = {k: v[:, t] for k, v in prior.items()}
                     feat = self._wm.dynamics.get_feat(init_t)
                     inp = feat.detach()
 
-                    # AI policy
                     ai_dist = self._task_behavior.actor(inp)
                     action = ai_dist.sample()
                     actions.append(to_np(action))
 
-                    clin_action_onehot = phys_action[:, 5 + t]
-
-                    # pi_ai(a_clin | s_t)
-                    logp_ai = ai_dist.log_prob(clin_action_onehot)
-                    pi_ai = torch.exp(logp_ai)
-
-                    # pi_b(a_clin | s_t)
-                    logp_b = tools.behavior_log_prob(self._behavior_policy, inp, clin_action_onehot)
-                    pi_b = torch.exp(logp_b)
-
-                    pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
-                    pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
-
-                    # observed reward for OPE
-                    reward_t = float(to_np(data["reward"][:, 5 + t].squeeze()))
-                    reward_list.append(reward_t)
-
-                    # model-based AI return for mortality-vs-return analysis
                     succ = self._wm.dynamics.img_step(init_t, action)
                     ai_value = self._wm.heads["reward"](
                         self._wm.dynamics.get_feat(succ).detach()
@@ -163,6 +188,8 @@ class Dreamer(nn.Module):
                     pi_b_clin_list,
                     reward_list,
                     gamma=self._config.discount,
+                    prob_eps=1e-6,
+                    rho_max=20.0,
                 )
                 if traj_ope is not None:
                     ope_trajs.append(traj_ope)
@@ -174,7 +201,8 @@ class Dreamer(nn.Module):
             print("No valid episodes for evaluation.", flush=True)
             return
 
-        ope_metrics = tools.finalize_ope(ope_trajs)
+        tools.debug_ope_summary(ope_trajs)
+        ope_metrics = tools.finalize_ope(ope_trajs, debug=True, top_k=10)
 
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
@@ -333,14 +361,13 @@ class Dreamer(nn.Module):
                 phys_action = data["action"].detach().clone()
                 is_first = data["is_first"].detach().clone()
 
-                states, _ = self._wm.dynamics.observe(
-                    embed[:, :5], phys_action[:, :5], is_first[:, :5]
-                )
+                full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first)
 
+                states = {k: v[:, :5] for k, v in full_states.items()}
                 recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
                 reward_post = self._wm.heads["reward"](self._wm.dynamics.get_feat(states)).mode()
                 cont_post = self._wm.heads["cont"](self._wm.dynamics.get_feat(states)).mode()
-                init = {k: v[:, -1] for k, v in states.items()}
+                init = {k: v[:, 4] for k, v in full_states.items()}
 
                 if phys_action.shape[1] <= 5:
                     print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
@@ -378,6 +405,49 @@ class Dreamer(nn.Module):
 
                     _, T_roll, _, _ = prior["stoch"].shape
 
+                    # -------- OPE on REAL states (post), from step 5 onward --------
+                    for t in range(5, phys_action.shape[1] - 1):
+                        real_state_t = {k: v[:, t] for k, v in full_states.items()}
+                        feat_real = self._wm.dynamics.get_feat(real_state_t)
+                        inp_real = feat_real.detach()
+
+                        value_real = self._task_behavior.value(inp_real).mode()
+
+                        if len(ope_trajs) < 3 and t < 15:
+                            print(
+                                f"[value debug] stay={stay_id} t={t} "
+                                f"value={float(to_np(value_real.squeeze())):.4f}",
+                                flush=True,
+                            )
+
+                        clin_action_onehot = phys_action[:, t + 1]
+
+                        ai_dist_real = self._task_behavior.actor(inp_real)
+                        logp_ai = ai_dist_real.log_prob(clin_action_onehot)
+                        pi_ai = torch.exp(logp_ai)
+
+                        logp_b = tools.behavior_log_prob(self._behavior_policy, inp_real, clin_action_onehot)
+                        pi_b = torch.exp(logp_b)
+
+                        if len(ope_trajs) < 3 and t < 15:
+                            clin_idx = torch.argmax(clin_action_onehot, dim=-1).item()
+                            ai_top = torch.argmax(ai_dist_real.probs, dim=-1).item()
+                            b_dist_real = self._behavior_policy(inp_real)
+                            b_top = torch.argmax(b_dist_real.probs, dim=-1).item()
+
+                            print(
+                                f"[_eval OPE debug] stay={stay_id} t={t} "
+                                f"clin={clin_idx} ai_top={ai_top} b_top={b_top} "
+                                f"pi_ai={float(to_np(pi_ai.squeeze())):.6e} "
+                                f"pi_b={float(to_np(pi_b.squeeze())):.6e}",
+                                flush=True,
+                            )
+
+                        pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
+                        pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
+                        reward_list.append(float(to_np(data["reward"][:, t + 1].squeeze())))
+
+                    # -------- model-based rollout for AI action analysis --------
                     for t in range(T_roll):
                         init_t = {k: v[:, t] for k, v in prior.items()}
                         feat = self._wm.dynamics.get_feat(init_t)
@@ -386,20 +456,6 @@ class Dreamer(nn.Module):
                         ai_dist = self._task_behavior.actor(inp)
                         action = ai_dist.sample()
                         actions.append(to_np(action))
-
-                        clin_action_onehot = phys_action[:, 5 + t]
-
-                        logp_ai = ai_dist.log_prob(clin_action_onehot)
-                        pi_ai = torch.exp(logp_ai)
-
-                        logp_b = tools.behavior_log_prob(self._behavior_policy, inp, clin_action_onehot)
-                        pi_b = torch.exp(logp_b)
-
-                        pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
-                        pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
-
-                        reward_t = float(to_np(data["reward"][:, 5 + t].squeeze()))
-                        reward_list.append(reward_t)
 
                         succ = self._wm.dynamics.img_step(init_t, action)
                         ai_value = self._wm.heads["reward"](
@@ -416,6 +472,8 @@ class Dreamer(nn.Module):
                         pi_b_clin_list,
                         reward_list,
                         gamma=self._config.discount,
+                        prob_eps=1e-6,
+                        rho_max=20.0,
                     )
                     if traj_ope is not None:
                         ope_trajs.append(traj_ope)
@@ -434,7 +492,8 @@ class Dreamer(nn.Module):
         metrics["cont_acc"] = to_np(cont_acc) / valid_episodes
 
         if self._config.mode != "world_model":
-            ope_metrics = tools.finalize_ope(ope_trajs)
+            tools.debug_ope_summary(ope_trajs)
+            ope_metrics = tools.finalize_ope(ope_trajs, debug=True, top_k=10)
 
             phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
             ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
@@ -501,23 +560,28 @@ class Dreamer(nn.Module):
 
                 post, embed, data = self._wm._load(data)
                 feat = self._wm.dynamics.get_feat(post)
-                action = data["action"]
-                dist = self._behavior_policy(feat)
 
-                loss = -dist.log_prob(action)         # [B, T]
+                feat_in = feat[:, :-1]
+                action_tgt = data["action"][:, 1:]
+
+                dist = self._behavior_policy(feat_in)
+
+                loss = -dist.log_prob(action_tgt)
                 total_loss += loss.sum().item()
 
-                pred_idx = torch.argmax(dist.probs, dim=-1)   # [B, T]
-                true_idx = torch.argmax(action, dim=-1)       # [B, T]
-                total_correct += (pred_idx == true_idx).sum().item()
+                pred_idx = torch.argmax(dist.probs, dim=-1)
+                true_idx = torch.argmax(action_tgt, dim=-1)
 
-                clin_prob = (dist.probs * action).sum(dim=-1) # [B, T]
+                correct = (pred_idx == true_idx).float()
+                total_correct += correct.sum().item()
+
+                clin_prob = (dist.probs * action_tgt).sum(dim=-1)
                 total_clin_prob += clin_prob.sum().item()
 
-                entropy = dist.entropy()                      # [B, T]
+                entropy = dist.entropy()
                 total_entropy += entropy.sum().item()
 
-                total_steps += action.shape[0] * action.shape[1]
+                total_steps += action_tgt.shape[0] * action_tgt.shape[1]
 
         if total_steps == 0:
             print("No valid steps for behavior evaluation.", flush=True)

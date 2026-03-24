@@ -310,196 +310,229 @@ class ImagBehavior(nn.Module):
         self,
         start,
         objective,
-        feat = None, 
-        data = None,
-        use_history = False
+        feat=None,
+        data=None,
+        use_history=False,
     ):
         self._update_slow_target()
         metrics = {}
         self._valuenorm = tools.ValueNorm()
 
-        with tools.RequiresGrad(self.actor):
-            if use_history: 
-                init = {k: v[:, -1] for k, v in start.items()}
-                imag_feat, succ, imag_action = self._imagine_in_time(
-                    init, self.actor, self._config.imag_time
-                )
-                swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-                action, feat = map(swap, (data["action"], feat))
-                start = {k: swap(v) for k, v in start.items()}
-                imag_feat = torch.cat([feat[1:], imag_feat], dim=0)
-                imag_action = torch.cat([action[1:], imag_action], dim=0)
-                imag_state = {k: torch.cat([start[k], v[:-1]], 0) for k, v in succ.items()}
+        swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
+        feat, action = map(swap, (feat, data["action"]))
 
-            else:
-                imag_feat, imag_state, imag_action = self._imagine_in_horizon(
-                    start, self.actor, self._config.imag_horizon
-                )
-            reward = objective(imag_feat, imag_state, imag_action)
-            actor_ent = self.actor(imag_feat).entropy()
-            state_ent = self._world_model.dynamics.get_dist(imag_state).entropy()
-            # this target is not scaled by ema or sym_log.
-            target, weights, base = self._compute_target(
-                imag_feat, imag_state, reward
+        if use_history:
+
+            # -------------------------
+            # REAL PART (policy learning)
+            # -------------------------
+
+            feat_real = feat[:-1]         # s_t
+            action_real = action[1:]      # a_{t+1}
+
+            # start imagination FROM last real latent state
+            init = {k: v[:, -1] for k, v in start.items()}
+
+            imag_feat, imag_state, imag_action = self._imagine_in_time(
+                init,
+                self.actor,
+                self._config.imag_time,
             )
-            actor_loss, mets = self._compute_actor_loss(
-                imag_feat,
-                imag_action,
-                target,
-                weights,
-                base,
+
+            # -------------------------
+            # CONCAT TEMPORALLY (paper way)
+            # -------------------------
+
+            imag_feat = torch.cat([feat_real, imag_feat], dim=0)
+            imag_action = torch.cat([action_real, imag_action], dim=0)
+
+        else:
+
+            imag_feat, imag_state, imag_action = self._imagine_in_horizon(
+                start,
+                self.actor,
+                self._config.imag_horizon,
             )
-            actor_loss -= self._config.actor["entropy"] * actor_ent[:-1, ..., None]
-            actor_loss = torch.mean(actor_loss)
-            metrics.update(mets)
-            value_input = imag_feat
+
+        # =========================
+        # OBJECTIVE
+        # =========================
+
+        reward = objective(imag_feat, imag_state, imag_action)
+
+        policy = self.actor(imag_feat)
+        actor_ent = policy.entropy()
+
+        target, weights, base = self._compute_target(
+            imag_feat,
+            imag_state,
+            reward,
+        )
+
+        actor_loss, mets = self._compute_actor_loss(
+            imag_feat,
+            imag_action,
+            target,
+            weights,
+            base,
+        )
+
+        actor_loss -= self._config.actor["entropy"] * actor_ent[:-1, ..., None]
+        actor_loss = actor_loss.mean()
+
+        metrics.update(mets)
+
+        # =========================
+        # VALUE
+        # =========================
 
         with tools.RequiresGrad(self.value):
-            value = self.value(value_input[:-1].detach())
+
+            value = self.value(imag_feat[:-1].detach())
+
             target = torch.stack(target, dim=1)
-            # (time, batch, 1), (time, batch, 1) -> (time, batch)
+
             value_loss = -value.log_prob(target.detach())
-            slow_target = self._slow_value(value_input[:-1].detach())
+
+            slow_target = self._slow_value(imag_feat[:-1].detach())
+
             if self._config.critic["slow_target"]:
                 value_loss -= value.log_prob(slow_target.mode().detach())
-            if self._config.critic.get("repl_loss", False):
-                swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-                rew, cont, delta = map(swap, (data["reward"], data["cont"], data["delta"])) # → (T, B, 1)
-                repfeat = feat.detach() # (T, B, D)
-                pcont = torch.exp(-delta / 5).mean(dim=-1, keepdim=True) # (T, B, 1)
 
-                # Forward through value networks
-                val = self.value(repfeat).mode()          # (T, B, 1)
-                slowval = self._slow_value(repfeat).mode()  # (T, B, 1)
-                boot = slowval[-1].detach()               # (B, 1)
-
-                ret = tools.lambda_return(
-                    reward=rew[1:],
-                    value=slowval[:-1].detach(),  # (T-1, B, 1)
-                    pcont=pcont[1:],               # (T-1, B, 1)
-                    bootstrap=boot,
-                    lambda_=self._config.discount_lambda,
-                    axis=0,
-                )  # → (T, B, 1)
-
-                # Normalize return
-                ret = torch.stack(ret, dim=1)
-                offset, scale = self._valuenorm.update(ret)
-                ret_normed = (ret - offset) / scale
-                ret_padded = torch.cat([ret_normed, torch.zeros_like(ret_normed[:1])], dim=0)  # (T, B, 1)
-
-                # Compute loss between predicted and normalized return
-                repval_loss = (val - ret_padded.detach()) ** 2
-                repval_loss += self._config.critic["slow_reg"] * (slowval - ret_padded.detach()) ** 2
-
-                value_loss = value_loss[:, :, None]
-                value_loss_main = torch.mean(weights[:-1] * value_loss)
-
-                rep_weights = torch.ones_like(repval_loss)
-                value_loss_rep = torch.mean(rep_weights * repval_loss)
-
-                value_loss = value_loss_main + self._config.critic["rep_loss_weight"] * value_loss_rep
-                metrics["reploss/repval_loss"] = to_np(repval_loss.mean())
+            value_loss = value_loss.mean()
 
         metrics.update(tools.tensorstats(value.mode(), "value"))
         metrics.update(tools.tensorstats(target, "target"))
-        metrics.update(tools.tensorstats(reward, "imag_reward"))
-        if self._config.actor["dist"] in ["onehot"]:
-            metrics.update(
-                tools.tensorstats(
-                    torch.argmax(imag_action, dim=-1).float(), "imag_action"
-                )
-            )
-        else:
-            metrics.update(tools.tensorstats(imag_action, "imag_action"))
-        metrics["actor_entropy"] = to_np(torch.mean(actor_ent))
+        metrics.update(tools.tensorstats(reward, "real_reward"))
+        metrics["actor_entropy"] = to_np(actor_ent.mean())
+
         with tools.RequiresGrad(self):
             metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
             metrics.update(self._value_opt(value_loss, self.value.parameters()))
+
         return imag_feat, imag_state, imag_action, weights, metrics
     
     def _train_p1(
         self,
         start,
-        feat = None, 
-        data = None,
+        feat=None,
+        data=None,
     ):
         self._update_slow_target()
         metrics = {}
         self._valuenorm = tools.ValueNorm()
 
+        swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
+        feat, action, reward, cont, delta = map(
+            swap, (feat, data["action"], data["reward"], data["cont"], data["delta"])
+        )
+
+        # feat[t]   = state s_t
+        # action[t] = action that brings to s_t
+        feat_prev = feat[:-1]       # s_t
+        action_next = action[1:]    # a_t
+        reward_next = reward[1:]    # r_{t+1}
+        if self._config.cont_type == "mort3":
+            cont_next = cont[1:][..., 2:3]   # ICU continuation prob
+        else:
+            cont_next = cont[1:]       # cont_{t+1}
+        delta_next = delta[1:]      # delta_{t+1}
+        feat_next = feat[1:]        # s_{t+1}
+
         with tools.RequiresGrad(self.actor):
-            swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-            feat, action, reward, cont, delta = map(swap, (feat, data["action"], data["reward"], data["cont"], data["delta"]))
-            start = {k: swap(v) for k, v in start.items()} # → (T, B, 1)
-            actor_ent = self.actor(feat).entropy()
-            
-            target, weights, base = self._compute_target(
-                feat, start, reward
+            actor_ent = self.actor(feat_prev).entropy()
+
+            target, weights, base = self._compute_target_from_real(
+                feat_prev, feat_next, reward_next, cont_next
             )
-            actor_loss, mets = self._compute_actor_loss(
-                feat,
-                action,
+
+            actor_loss, mets = self._compute_actor_loss_real(
+                feat_prev,
+                action_next,
                 target,
                 weights,
                 base,
             )
-            actor_loss -= self._config.actor["entropy"] * actor_ent[:-1, ..., None]
+            actor_loss -= self._config.actor["entropy"] * actor_ent[..., None]
             actor_loss = torch.mean(actor_loss)
             metrics.update(mets)
 
-            with tools.RequiresGrad(self.value):
-                repfeat = feat.detach()
-                target = torch.stack(target, dim=1)
-                pcont = torch.exp(-delta / 5).mean(dim=-1, keepdim=True)
+        with tools.RequiresGrad(self.value):
+            repfeat = feat_prev.detach()       # s_t
+            nextfeat = feat_next.detach()      # s_{t+1}
+            pcont = torch.exp(-delta_next / 5).mean(dim=-1, keepdim=True)
 
-                value = self.value(repfeat).mode()
-                slowval = self._slow_value(repfeat).mode()
-                boot = slowval[-1].detach()
+            value = self.value(repfeat).mode()                # V(s_t)
+            slowval_next = self._slow_value(nextfeat).mode()  # V_target(s_{t+1})
+            boot = slowval_next[-1].detach()
 
-                ret = tools.lambda_return(
-                    reward=reward[1:],
-                    value=slowval[:-1].detach(),
-                    pcont=pcont[1:],
-                    bootstrap=boot,
-                    lambda_=self._config.discount_lambda,
-                    axis=0,
-                )
+            ret = tools.lambda_return(
+                reward=reward_next,                 # r_{t+1}
+                value=slowval_next.detach(),        # V(s_{t+1})
+                pcont=pcont,                        # cont_{t+1}
+                bootstrap=boot,
+                lambda_=self._config.discount_lambda,
+                axis=0,
+            )
 
-                ret = torch.stack(ret, dim=1)
-                offset, scale = self._valuenorm.update(ret)
-                ret_normed = (ret - offset) / scale
-                ret_padded = torch.cat([ret_normed, torch.zeros_like(ret_normed[:1])], dim=0)
+            ret = torch.stack(ret, dim=1)
+            offset, scale = self._valuenorm.update(ret)
+            ret_normed = (ret - offset) / scale
 
-                repval_loss = (value - ret_padded.detach()) ** 2
-                repval_loss += self._config.critic["slow_reg"] * (slowval - ret_padded.detach()) ** 2
+            repval_loss = (value - ret_normed.detach()) ** 2
+            repval_loss += self._config.critic["slow_reg"] * (
+                self._slow_value(repfeat).mode() - ret_normed.detach()
+            ) ** 2
 
-                value_loss = torch.mean(weights * repval_loss)
-                metrics["reploss/repval_loss"] = to_np(repval_loss.mean())
+            value_loss = torch.mean(weights * repval_loss)
+            metrics["reploss/repval_loss"] = to_np(repval_loss.mean())
 
         metrics.update(tools.tensorstats(value, "value"))
-        metrics.update(tools.tensorstats(target, "target"))
-        metrics.update(tools.tensorstats(reward, "imag_reward"))
+        metrics.update(tools.tensorstats(ret_normed, "target"))
+        metrics.update(tools.tensorstats(reward_next, "imag_reward"))
         metrics["actor_entropy"] = to_np(torch.mean(actor_ent))
+
         with tools.RequiresGrad(self):
             metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
             metrics.update(self._value_opt(value_loss, self.value.parameters()))
+
         return weights, metrics
 
     def _train_p1_td(self, feat, data):
         self._update_slow_target()
         metrics = {}
+
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-        feat, action, reward, cont = map(swap, (feat, data["action"], data["reward"], data["cont"]))
-        gamma = self._config.discount_lambda
+        feat, action, reward, cont = map(
+            swap, (feat, data["action"], data["reward"], data["cont"])
+        )
+
+        # Dataset semantics:
+        # feat[t]   = latent state s_t
+        # action[t] = action that led to s_t
+        #
+        # So for policy learning we need:
+        #   input state  = s_t      -> feat[:-1]
+        #   target action = a_{t+1} -> action[1:]
+        #   reward target = r_{t+1} -> reward[1:]
+        #   continuation  = c_{t+1} -> cont[1:]
+
+        feat_prev = feat[:-1]      # s_t
+        feat_next = feat[1:]       # s_{t+1}
+        action_next = action[1:]   # a_{t+1}
+        reward_next = reward[1:]   # r_{t+1}
+        if self._config.cont_type == "mort3":
+            cont_next = cont[1:][..., 2:3]   # ICU continuation prob
+        else:
+            cont_next = cont[1:]       # cont_{t+1}
+
+        gamma = self._config.discount
 
         with tools.RequiresGrad(self.value):
-            value_t = self.value(feat[:-1])
-            value_tp1 = self._slow_value(feat[1:]).mode().detach()
-            reward_t = reward[:-1]
-            cont_t = cont[:-1]
+            value_t = self.value(feat_prev)                    # V(s_t)
+            value_tp1 = self._slow_value(feat_next).mode().detach()  # target V(s_{t+1})
 
-            target = reward_t + gamma * cont_t * value_tp1
+            target = reward_next + gamma * cont_next * value_tp1
             value_loss = -value_t.log_prob(target.detach())
             value_loss = value_loss.mean()
 
@@ -507,21 +540,26 @@ class ImagBehavior(nn.Module):
             metrics["td/target_mean"] = to_np(target.mean())
 
         with tools.RequiresGrad(self.actor):
-            policy = self.actor(feat[:-1].detach())
-            actor_ent = self.actor(feat).entropy()
-            logp = policy.log_prob(action[:-1])
-            baseline = value_t.mode().detach()
-            advantage = (target.detach() - baseline)
-            actor_loss = -(logp.unsqueeze(-1) * advantage).mean()
+            policy = self.actor(feat_prev.detach())            # pi(. | s_t)
+            actor_ent = policy.entropy()
+            logp = policy.log_prob(action_next)                # log pi(a_{t+1} | s_t)
 
-        # Optimize both networks
+            baseline = value_t.mode().detach()
+            advantage = target.detach() - baseline
+
+            actor_loss = -(logp.unsqueeze(-1) * advantage)
+            actor_loss -= self._config.actor["entropy"] * actor_ent.unsqueeze(-1)
+            actor_loss = actor_loss.mean()
+
         metrics.update(tools.tensorstats(value_t.mode(), "value"))
         metrics.update(tools.tensorstats(target, "target"))
-        metrics.update(tools.tensorstats(reward, "imag_reward"))
-        metrics["actor_entropy"] = to_np(torch.mean(actor_ent))
+        metrics.update(tools.tensorstats(reward_next, "imag_reward"))
+        metrics["actor_entropy"] = to_np(actor_ent.mean())
+
         with tools.RequiresGrad(self):
             metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
             metrics.update(self._value_opt(value_loss, self.value.parameters()))
+
         return metrics
 
     def _imagine_in_horizon(self, start, policy, horizon):
@@ -672,22 +710,32 @@ class BehaviorPolicy(nn.Module):
         return dist
 
     def train_batch(self, feat, action_onehot):
+
         self.train()
 
+        # dataset semantics:
+        # feat[t]   = s_t
+        # action[t] = action that led to s_t
+
+        feat_input = feat[:, :-1]           # s_t
+        action_target = action_onehot[:, 1:] # a_{t+1}
+
         with tools.RequiresGrad(self):
-            dist = self(feat)
-            loss = -dist.log_prob(action_onehot).mean()
+            dist = self(feat_input)
+            loss = -dist.log_prob(action_target).mean()
             metrics = self._opt(loss, self.parameters(), retain_graph=False)
 
         with torch.no_grad():
             pred = dist.mode().argmax(-1)
-            true = action_onehot.argmax(-1)
+            true = action_target.argmax(-1)
+
             accuracy = (pred == true).float().mean()
-            p_clin = torch.exp(dist.log_prob(action_onehot)).mean()
+            p_clin = torch.exp(dist.log_prob(action_target)).mean()
             entropy = dist.entropy().mean()
 
         metrics["behavior_loss"] = to_np(loss)
         metrics["behavior_acc"] = to_np(accuracy)
         metrics["behavior_avg_p"] = to_np(p_clin)
         metrics["behavior_entropy"] = to_np(entropy)
+
         return metrics
