@@ -898,7 +898,11 @@ def save_model(agent, model_name, dir, epoch):
 
 def load_model(agent, model_name, dir, epoch, device, actor_lr=None, value_lr=None):
     if model_name == "all":
-        items_to_load = torch.load(pathlib.Path(dir).expanduser() / f"agent_{epoch}.pt", map_location=device)
+        items_to_load = torch.load(
+            pathlib.Path(dir).expanduser() / f"agent_{epoch}.pt",
+            map_location=device,
+            weights_only=False
+        )
         agent.load_state_dict(items_to_load["agent_state_dict"])
         if actor_lr:
             items_to_load["optims_state_dict"]['_task_behavior._actor_opt._opt']['param_groups'][0]['lr'] = actor_lr
@@ -1070,25 +1074,33 @@ def behavior_log_prob(behavior_policy, feat, action_onehot):
         dist = behavior_policy(feat)
         return dist.log_prob(action_onehot)
 
-def compute_ope_trajectory(pi_ai_list, pi_b_list, reward_list, gamma,
-                           prob_eps=1e-6, rho_max=100.0):
+def compute_ope_trajectory(
+    pi_ai_list,
+    pi_b_list,
+    reward_list,
+    gamma,
+    prob_eps=1e-6,
+    rho_max=5.0,
+    max_ope_steps=30,
+):
     pi_ai = np.asarray(pi_ai_list, dtype=np.float64).reshape(-1)
     pi_b = np.asarray(pi_b_list, dtype=np.float64).reshape(-1)
     rewards = np.asarray(reward_list, dtype=np.float64).reshape(-1)
+
+    if max_ope_steps is not None:
+        pi_ai = pi_ai[:max_ope_steps]
+        pi_b = pi_b[:max_ope_steps]
+        rewards = rewards[:max_ope_steps]
 
     T = len(rewards)
     if T == 0:
         return None
 
-    # Stabilize probabilities
     pi_ai = np.clip(pi_ai, prob_eps, 1.0)
     pi_b = np.clip(pi_b, prob_eps, 1.0)
 
-    # Importance ratios
     rho_raw = pi_ai / pi_b
     rho = np.clip(rho_raw, 0.0, rho_max)
-
-    # Cumulative ratios
     cum_rho = np.cumprod(rho)
 
     discounts = gamma ** np.arange(T, dtype=np.float64)
@@ -1096,8 +1108,6 @@ def compute_ope_trajectory(pi_ai_list, pi_b_list, reward_list, gamma,
 
     traj_return = disc_rewards.sum()
     wis_weight = cum_rho[-1]
-
-    # trajectory-level PDIS contribution
     pdis = np.sum(cum_rho * disc_rewards)
 
     return {
@@ -1132,48 +1142,59 @@ def finalize_ope(ope_trajs, debug=False, top_k=5):
     if len(ope_trajs) == 0:
         return {
             "wis": 0.0,
-            "pdwis": 0.0,
             "wpdis": 0.0,
             "cwpdis": 0.0,
             "ess": 0.0,
+            "ess_min": 0.0,
+            "ess_mean": 0.0,
         }
 
     final_weights = np.array([traj["wis_weight"] for traj in ope_trajs], dtype=np.float64)
     traj_returns = np.array([traj["traj_return"] for traj in ope_trajs], dtype=np.float64)
-    traj_pdis = np.array([traj["pdis"] for traj in ope_trajs], dtype=np.float64)
 
-    # 1) WIS
+    # WIS
     wis = float(
         np.sum(final_weights * traj_returns) / (np.sum(final_weights) + 1e-8)
     )
 
-    # 2) trajectory-level average PDIS
-    wpdis = float(np.mean(traj_pdis))
-
-    # 3) per-decision weighted IS
+    # CWPDIS / weighted per-decision
     max_len = max(len(traj["cum_rho"]) for traj in ope_trajs)
-    pdwis = 0.0
+    cwpdis = 0.0
+    ess_t_list = []
 
     for t in range(max_len):
-        num_reward = 0.0
-        den_weight = 0.0
+        w_t_all = []
+        wr_t_all = []
 
         for traj in ope_trajs:
             if t < len(traj["cum_rho"]):
                 w_t = traj["cum_rho"][t]
                 r_t = traj["disc_rewards"][t]
-                num_reward += w_t * r_t
-                den_weight += w_t
+                w_t_all.append(w_t)
+                wr_t_all.append(w_t * r_t)
 
-        if den_weight > 0:
-            pdwis += num_reward / (den_weight + 1e-8)
+        if len(w_t_all) == 0:
+            continue
 
-    cwpdis = float(pdwis)
+        w_t_all = np.asarray(w_t_all, dtype=np.float64)
+        wr_t_all = np.asarray(wr_t_all, dtype=np.float64)
 
-    # 4) ESS
+        den = np.sum(w_t_all)
+        if den > 0:
+            cwpdis += float(np.sum(wr_t_all) / (den + 1e-8))
+
+        ess_t = (np.sum(w_t_all) ** 2) / (np.sum(w_t_all ** 2) + 1e-8)
+        ess_t_list.append(float(ess_t))
+
+    wpdis = cwpdis
+
+    # trajectory-level ESS
     ess = float(
         (np.sum(final_weights) ** 2) / (np.sum(final_weights ** 2) + 1e-8)
     )
+
+    ess_min = float(np.min(ess_t_list)) if len(ess_t_list) else 0.0
+    ess_mean = float(np.mean(ess_t_list)) if len(ess_t_list) else 0.0
 
     if debug:
         order = np.argsort(-np.abs(final_weights))
@@ -1182,11 +1203,12 @@ def finalize_ope(ope_trajs, debug=False, top_k=5):
             print(f"rank={rank} idx={idx} debug={ope_trajs[idx]['debug']}")
 
     return {
-        "wis": float(wis),
-        "pdwis": float(pdwis),
-        "wpdis": float(wpdis),
-        "cwpdis": float(cwpdis),
-        "ess": float(ess),
+        "wis": wis,
+        "wpdis": wpdis,
+        "cwpdis": cwpdis,
+        "ess": ess,
+        "ess_min": ess_min,
+        "ess_mean": ess_mean,
     }
 
 def debug_ope_summary(ope_trajs):
@@ -1208,3 +1230,4 @@ def debug_ope_summary(ope_trajs):
     print("cum_rho_last max =", cum_last.max())
     print("num cum_rho_last > 1e3 =", int(np.sum(cum_last > 1e3)))
     print("num cum_rho_last < 1e-3 =", int(np.sum(cum_last < 1e-3)))
+    print("median cum_rho_last =", float(np.median(cum_last)))
