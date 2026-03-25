@@ -70,7 +70,6 @@ def extract_best_from_json(logdir):
 
     to_maximize = [
         "wis",
-        "pdwis",
         "wpdis",
         "cwpdis",
         "ess",
@@ -1149,52 +1148,46 @@ def finalize_ope(ope_trajs, debug=False, top_k=5):
             "ess_mean": 0.0,
         }
 
-    final_weights = np.array([traj["wis_weight"] for traj in ope_trajs], dtype=np.float64)
+    num_trajs = len(ope_trajs)
+
+    final_weights = np.array([traj["cum_rho"][-1] for traj in ope_trajs], dtype=np.float64)
     traj_returns = np.array([traj["traj_return"] for traj in ope_trajs], dtype=np.float64)
 
-    # WIS
-    wis = float(
-        np.sum(final_weights * traj_returns) / (np.sum(final_weights) + 1e-8)
-    )
+    wis = float(np.sum(final_weights * traj_returns) / (np.sum(final_weights) + 1e-8))
 
-    # CWPDIS / weighted per-decision
     max_len = max(len(traj["cum_rho"]) for traj in ope_trajs)
+    wpdis = 0.0
     cwpdis = 0.0
     ess_t_list = []
 
     for t in range(max_len):
-        w_t_all = []
-        wr_t_all = []
+        weighted_rewards_t = []
+        weights_t = []
 
         for traj in ope_trajs:
             if t < len(traj["cum_rho"]):
                 w_t = traj["cum_rho"][t]
                 r_t = traj["disc_rewards"][t]
-                w_t_all.append(w_t)
-                wr_t_all.append(w_t * r_t)
+                weighted_rewards_t.append(w_t * r_t)
+                weights_t.append(w_t)
+            else:
+                weighted_rewards_t.append(0.0)
 
-        if len(w_t_all) == 0:
-            continue
+        weighted_rewards_t = np.asarray(weighted_rewards_t, dtype=np.float64)
 
-        w_t_all = np.asarray(w_t_all, dtype=np.float64)
-        wr_t_all = np.asarray(wr_t_all, dtype=np.float64)
+        # WPDIS
+        wpdis += float(np.sum(weighted_rewards_t) / num_trajs)
 
-        den = np.sum(w_t_all)
-        if den > 0:
-            cwpdis += float(np.sum(wr_t_all) / (den + 1e-8))
+        # CWPDIS
+        if len(weights_t) > 0:
+            weights_t = np.asarray(weights_t, dtype=np.float64)
+            cwpdis += float(np.sum(weighted_rewards_t) / (np.sum(weights_t) + 1e-8))
+            ess_t = (np.sum(weights_t) ** 2) / (np.sum(weights_t ** 2) + 1e-8)
+            ess_t_list.append(float(ess_t))
 
-        ess_t = (np.sum(w_t_all) ** 2) / (np.sum(w_t_all ** 2) + 1e-8)
-        ess_t_list.append(float(ess_t))
-
-    wpdis = cwpdis
-
-    # trajectory-level ESS
-    ess = float(
-        (np.sum(final_weights) ** 2) / (np.sum(final_weights ** 2) + 1e-8)
-    )
-
-    ess_min = float(np.min(ess_t_list)) if len(ess_t_list) else 0.0
-    ess_mean = float(np.mean(ess_t_list)) if len(ess_t_list) else 0.0
+    ess = float((np.sum(final_weights) ** 2) / (np.sum(final_weights ** 2) + 1e-8))
+    ess_min = float(np.min(ess_t_list)) if ess_t_list else 0.0
+    ess_mean = float(np.mean(ess_t_list)) if ess_t_list else 0.0
 
     if debug:
         order = np.argsort(-np.abs(final_weights))

@@ -137,61 +137,66 @@ def add_reward_to_dataframe(
     r_terminal=DEFAULT_R_TERMINAL,
 ):
     """
-    Add a reward column to a dataframe.
+    RL-consistent reward construction.
 
-    Assumptions:
-    - each ICU stay is one episode
-    - rows are transitions ordered by timestep
-    - terminal reward is assigned to the last row of each ICU stay
+    For each ICU stay with raw states s0 ... s_{T-1}:
+
+    - we KEEP only rows 0 ... T-2
+    - reward[k] =
+        intermediate reward for k < T-2
+        terminal reward for k = T-2
+
+    The final raw state s_{T-1} is dropped.
     """
+
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).copy()
-    rewards = np.zeros(len(df), dtype=np.float32)
+
+    kept_rows = []
+    rewards = []
 
     for _, g in df.groupby(C_ICUSTAYID, sort=False):
-        idx = g.index.to_list()
 
-        if len(idx) == 1:
-            rewards[df.index.get_loc(idx[0])] = compute_transition_reward(
-                row_t=df.loc[idx[0]],
-                is_terminal=True,
-                outcome_col=outcome_col,
-                sofa_col=sofa_col,
-                lactate_col=lactate_col,
-                c0=c0,
-                c1=c1,
-                c2=c2,
-                r_terminal=r_terminal,
-            )
+        g = g.sort_values(C_TIMESTEP)
+
+        if len(g) < 2:
+            # cannot build a transition → skip stay
             continue
 
-        for k in range(len(idx) - 1):
-            i = idx[k]
-            j = idx[k + 1]
-            rewards[df.index.get_loc(i)] = compute_transition_reward(
-                row_t=df.loc[i],
-                row_tp1=df.loc[j],
-                is_terminal=False,
-                outcome_col=outcome_col,
-                sofa_col=sofa_col,
-                lactate_col=lactate_col,
-                c0=c0,
-                c1=c1,
-                c2=c2,
-                r_terminal=r_terminal,
-            )
+        rows = g.to_dict("records")
 
-        last_i = idx[-1]
-        rewards[df.index.get_loc(last_i)] = compute_transition_reward(
-            row_t=df.loc[last_i],
-            is_terminal=True,
-            outcome_col=outcome_col,
-            sofa_col=sofa_col,
-            lactate_col=lactate_col,
-            c0=c0,
-            c1=c1,
-            c2=c2,
-            r_terminal=r_terminal,
-        )
+        T = len(rows)
 
-    df[reward_col] = rewards
-    return df
+        # we will keep rows 0 ... T-2
+        for k in range(T - 1):
+
+            row_t = rows[k]
+
+            # last RL step → terminal reward
+            if k == T - 2:
+
+                r = compute_terminal_reward(
+                    died=bool(row_t[outcome_col]),
+                    r_terminal=r_terminal,
+                )
+
+            else:
+
+                row_tp1 = rows[k + 1]
+
+                r = compute_intermediate_reward(
+                    sofa_t=row_t[sofa_col],
+                    sofa_tp1=row_tp1[sofa_col],
+                    lactate_t=row_t[lactate_col],
+                    lactate_tp1=row_tp1[lactate_col],
+                    c0=c0,
+                    c1=c1,
+                    c2=c2,
+                )
+
+            kept_rows.append(row_t)
+            rewards.append(r)
+
+    out = pd.DataFrame(kept_rows)
+    out[reward_col] = np.array(rewards, dtype=np.float32)
+
+    return out

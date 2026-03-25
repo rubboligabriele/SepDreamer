@@ -227,13 +227,9 @@ class Dreamer(nn.Module):
 
         # OPE metrics
         metrics["wis"] = ope_metrics["wis"]
-        metrics["pdwis"] = ope_metrics["pdwis"]
         metrics["wpdis"] = ope_metrics["wpdis"]
         metrics["cwpdis"] = ope_metrics["cwpdis"]
         metrics["ess"] = ope_metrics["ess"]
-
-        # backward compatibility with old code
-        metrics["v_cwpdis"] = ope_metrics["cwpdis"]
 
         metrics["imag_episode_return"] = to_np(imag_rewards) / valid_episodes
         metrics["ai_episode_return"] = float(ai_episode_returns.mean())
@@ -516,13 +512,9 @@ class Dreamer(nn.Module):
             metrics["ai_episode_return"] = float(ai_episode_returns.mean())
 
             metrics["wis"] = ope_metrics["wis"]
-            metrics["pdwis"] = ope_metrics["pdwis"]
             metrics["wpdis"] = ope_metrics["wpdis"]
             metrics["cwpdis"] = ope_metrics["cwpdis"]
             metrics["ess"] = ope_metrics["ess"]
-
-            # backward compatibility
-            metrics["v_cwpdis"] = ope_metrics["cwpdis"]
 
             metrics["ai_action_min"] = ai_actions.min()
             metrics["ai_action_max"] = ai_actions.max()
