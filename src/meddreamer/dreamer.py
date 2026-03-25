@@ -48,7 +48,6 @@ class Dreamer(nn.Module):
         ai_episode_returns = []
         ai_actions = []
         phys_actions = []
-        sofas = []
         mortalities = []
         full_mort = []
         valid_episodes = 0
@@ -179,7 +178,6 @@ class Dreamer(nn.Module):
                 actions = np.stack(actions, axis=1)
                 ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
                 phys_actions.append(np.argmax(to_np(phys_action[0, 5:]), axis=-1))
-                sofas.append(to_np(data["sofa"][0, 5:]))
                 full_mort.append(to_np(data["mortality"][0, 5:]))
                 ai_episode_returns.append(ai_episode_return)
 
@@ -189,7 +187,8 @@ class Dreamer(nn.Module):
                     reward_list,
                     gamma=self._config.discount,
                     prob_eps=1e-6,
-                    rho_max=20.0,
+                    rho_max=5.0,
+                    max_ope_steps=30,
                 )
                 if traj_ope is not None:
                     ope_trajs.append(traj_ope)
@@ -208,7 +207,6 @@ class Dreamer(nn.Module):
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
         ai_actions = np.concatenate(ai_actions, axis=0)
         phys_actions = np.concatenate(phys_actions, axis=0)
-        sofas = np.concatenate(sofas, axis=0)
         full_mort = np.concatenate(full_mort, axis=0)
         mortalities = np.array(mortalities, dtype=np.float32)
 
@@ -244,7 +242,6 @@ class Dreamer(nn.Module):
             "mortality": full_mort,
             "phys_action": phys_actions,
             "ai_action": ai_actions,
-            "sofa": sofas,
         }
         df = pd.DataFrame(data_out)
         df.to_csv(os.path.join(self._logdir, f"result_data_{epoch}.csv"), index=False)
@@ -473,7 +470,8 @@ class Dreamer(nn.Module):
                         reward_list,
                         gamma=self._config.discount,
                         prob_eps=1e-6,
-                        rho_max=20.0,
+                        rho_max=5.0,
+                        max_ope_steps=30,
                     )
                     if traj_ope is not None:
                         ope_trajs.append(traj_ope)
