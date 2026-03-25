@@ -319,18 +319,30 @@ class ImagBehavior(nn.Module):
         self._valuenorm = tools.ValueNorm()
 
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-        feat, action = map(swap, (feat, data["action"]))
+        feat, action, reward_real_full, cont_real_full = map(
+            swap, (feat, data["action"], data["reward"], data["cont"])
+        )
 
+        # -------------------------------------------------
+        # CASE 1: Hybrid phase-1 training (paper-consistent)
+        # -------------------------------------------------
         if use_history:
+            # Dataset semantics:
+            # feat[t]   = s_t
+            # action[t] = action that led to s_t
+            #
+            # Therefore the real aligned tuples are:
+            # current state  : s_t      -> feat[:-1]
+            # next action    : a_{t+1}  -> action[1:]
+            # next reward    : r_{t+1}  -> reward[1:]
+            # next cont      : c_{t+1}  -> cont[1:]
 
-            # -------------------------
-            # REAL PART (policy learning)
-            # -------------------------
+            feat_real = feat[:-1]                # (T-1, B, D) current real states s_t
+            action_real = action[1:]             # (T-1, B, A) next real actions a_{t+1}
+            reward_real = reward_real_full[1:]   # (T-1, B, 1) next real rewards r_{t+1}
+            cont_real = cont_real_full[1:]       # (T-1, B, 1) or (T-1, B, 3)
 
-            feat_real = feat[:-1]         # s_t
-            action_real = action[1:]      # a_{t+1}
-
-            # start imagination FROM last real latent state
+            # Start imagination from the final real latent state s_T
             init = {k: v[:, -1] for k, v in start.items()}
 
             imag_feat, imag_state, imag_action = self._imagine_in_time(
@@ -338,72 +350,135 @@ class ImagBehavior(nn.Module):
                 self.actor,
                 self._config.imag_time,
             )
+            # imag_feat   : (tau, B, D) current imagined states
+            # imag_state  : dict of next imagined states after each imagined action
+            # imag_action : (tau, B, A)
 
-            # -------------------------
-            # CONCAT TEMPORALLY (paper way)
-            # -------------------------
+            imag_next_feat = self._world_model.dynamics.get_feat(imag_state)
 
-            imag_feat = torch.cat([feat_real, imag_feat], dim=0)
-            imag_action = torch.cat([action_real, imag_action], dim=0)
+            # Predicted rewards for imagined transitions
+            reward_imag = self._world_model.heads["reward"](imag_next_feat).mode()
 
-        else:
+            # Predicted continuation for imagined transitions
+            if self._config.cont_type == "mort3":
+                cont_imag = self._world_model.heads["cont"](imag_next_feat).probs[..., 2, None]
+            else:
+                cont_imag = self._world_model.heads["cont"](imag_next_feat).mean
 
-            imag_feat, imag_state, imag_action = self._imagine_in_horizon(
-                start,
-                self.actor,
-                self._config.imag_horizon,
-            )
+            # Current-state sequence for actor/critic
+            # [real current states] + [imagined current states]
+            feat_hybrid = torch.cat([feat_real, imag_feat], dim=0)
 
-        # =========================
-        # OBJECTIVE
-        # =========================
+            # Next actions aligned with feat_hybrid
+            action_hybrid = torch.cat([action_real, imag_action], dim=0)
+
+            # Rewards aligned with feat_hybrid transitions
+            reward_hybrid = torch.cat([reward_real, reward_imag], dim=0)
+
+            # Continuations aligned with feat_hybrid transitions
+            cont_hybrid = torch.cat([cont_real, cont_imag], dim=0)
+
+            # Convert continuation to scalar discount
+            if self._config.cont_type == "mort3":
+                discount_hybrid = self._config.discount * cont_hybrid[..., 2, None] \
+                    if cont_hybrid.shape[-1] == 3 else self._config.discount * cont_hybrid
+            else:
+                discount_hybrid = self._config.discount * cont_hybrid
+
+            with tools.RequiresGrad(self.actor):
+                policy = self.actor(feat_hybrid.detach())
+                actor_ent = policy.entropy()
+
+                target, weights, base = self._compute_target_hybrid(
+                    feat_hybrid,
+                    reward_hybrid,
+                    discount_hybrid,
+                    bootstrap_feat=imag_next_feat[-1].detach(),
+                )
+
+                actor_loss, mets = self._compute_actor_loss_hybrid(
+                    feat_hybrid,
+                    action_hybrid,
+                    target,
+                    weights,
+                    base,
+                )
+
+                actor_loss -= self._config.actor["entropy"] * actor_ent[..., None]
+                actor_loss = actor_loss.mean()
+                metrics.update(mets)
+
+            with tools.RequiresGrad(self.value):
+                value_dist = self.value(feat_hybrid.detach())
+                target_tensor = torch.stack(target, dim=1)
+
+                value_loss = -value_dist.log_prob(target_tensor.detach())
+
+                if self._config.critic["slow_target"]:
+                    slow_target = self._slow_value(feat_hybrid.detach()).mode().detach()
+                    value_loss -= value_dist.log_prob(slow_target)
+
+                value_loss = torch.mean(weights * value_loss[..., None] if value_loss.ndim == 2 else weights * value_loss)
+
+            metrics.update(tools.tensorstats(value_dist.mode(), "value"))
+            metrics.update(tools.tensorstats(target_tensor, "target"))
+            metrics.update(tools.tensorstats(reward_hybrid, "hybrid_reward"))
+            metrics["actor_entropy"] = to_np(actor_ent.mean())
+
+            with tools.RequiresGrad(self):
+                metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
+                metrics.update(self._value_opt(value_loss, self.value.parameters()))
+
+            # per compatibilità con il resto del codice
+            return feat_hybrid, imag_state, action_hybrid, weights, metrics
+
+        # -----------------------------------------
+        # CASE 2: Pure imagination (Dreamer phase-2)
+        # -----------------------------------------
+        imag_feat, imag_state, imag_action = self._imagine_in_horizon(
+            start,
+            self.actor,
+            self._config.imag_horizon,
+        )
 
         reward = objective(imag_feat, imag_state, imag_action)
 
-        policy = self.actor(imag_feat)
-        actor_ent = policy.entropy()
+        with tools.RequiresGrad(self.actor):
+            policy = self.actor(imag_feat)
+            actor_ent = policy.entropy()
 
-        target, weights, base = self._compute_target(
-            imag_feat,
-            imag_state,
-            reward,
-        )
+            target, weights, base = self._compute_target(
+                imag_feat,
+                imag_state,
+                reward,
+            )
 
-        actor_loss, mets = self._compute_actor_loss(
-            imag_feat,
-            imag_action,
-            target,
-            weights,
-            base,
-        )
+            actor_loss, mets = self._compute_actor_loss(
+                imag_feat,
+                imag_action,
+                target,
+                weights,
+                base,
+            )
 
-        actor_loss -= self._config.actor["entropy"] * actor_ent[:-1, ..., None]
-        actor_loss = actor_loss.mean()
-
-        metrics.update(mets)
-
-        # =========================
-        # VALUE
-        # =========================
+            actor_loss -= self._config.actor["entropy"] * actor_ent[:-1, ..., None]
+            actor_loss = actor_loss.mean()
+            metrics.update(mets)
 
         with tools.RequiresGrad(self.value):
-
             value = self.value(imag_feat[:-1].detach())
-
             target = torch.stack(target, dim=1)
-
             value_loss = -value.log_prob(target.detach())
 
-            slow_target = self._slow_value(imag_feat[:-1].detach())
-
             if self._config.critic["slow_target"]:
+                slow_target = self._slow_value(imag_feat[:-1].detach())
                 value_loss -= value.log_prob(slow_target.mode().detach())
 
             value_loss = value_loss.mean()
 
         metrics.update(tools.tensorstats(value.mode(), "value"))
         metrics.update(tools.tensorstats(target, "target"))
-        metrics.update(tools.tensorstats(reward, "real_reward"))
+        metrics.update(tools.tensorstats(reward, "imag_reward"))
         metrics["actor_entropy"] = to_np(actor_ent.mean())
 
         with tools.RequiresGrad(self):
@@ -662,6 +737,76 @@ class ImagBehavior(nn.Module):
         else:
             raise NotImplementedError(self._config.imag_gradient)
         actor_loss = -weights[:-1] * actor_target
+        return actor_loss, metrics
+    
+    def _compute_target_hybrid(self, feat_hybrid, reward_hybrid, discount_hybrid, bootstrap_feat):
+        """
+        feat_hybrid[t]      = current state s_t
+        reward_hybrid[t]    = reward for transition from s_t
+        discount_hybrid[t]  = continuation/discount for transition from s_t
+        bootstrap_feat      = state after the last transition
+        """
+        value = self.value(feat_hybrid).mode()
+        bootstrap = self._slow_value(bootstrap_feat).mode().detach()
+
+        target = tools.lambda_return(
+            reward=reward_hybrid,
+            value=value,
+            pcont=discount_hybrid,
+            bootstrap=bootstrap,
+            lambda_=self._config.discount_lambda,
+            axis=0,
+        )
+
+        weights = torch.cumprod(
+            torch.cat([torch.ones_like(discount_hybrid[:1]), discount_hybrid[:-1]], dim=0),
+            dim=0,
+        ).detach()
+
+        return target, weights, value
+
+
+    def _compute_actor_loss_hybrid(
+        self,
+        feat_hybrid,
+        action_hybrid,
+        target,
+        weights,
+        base,
+    ):
+        metrics = {}
+        policy = self.actor(feat_hybrid.detach())
+
+        target = torch.stack(target, dim=1)
+
+        if self._config.reward_EMA:
+            offset, scale = self.reward_ema(target, self.ema_vals)
+            normed_target = (target - offset) / scale
+            normed_base = (base - offset) / scale
+            adv = normed_target - normed_base
+
+            metrics.update(tools.tensorstats(normed_target, "normed_target"))
+            metrics["EMA_005"] = to_np(self.ema_vals[0])
+            metrics["EMA_095"] = to_np(self.ema_vals[1])
+        else:
+            adv = target - base
+
+        if self._config.imag_gradient == "dynamics":
+            actor_target = adv
+
+        elif self._config.imag_gradient == "reinforce":
+            actor_target = policy.log_prob(action_hybrid)[..., None] * adv.detach()
+
+        elif self._config.imag_gradient == "both":
+            reinforce_term = policy.log_prob(action_hybrid)[..., None] * adv.detach()
+            mix = self._config.imag_gradient_mix
+            actor_target = mix * adv + (1 - mix) * reinforce_term
+            metrics["imag_gradient_mix"] = mix
+
+        else:
+            raise NotImplementedError(self._config.imag_gradient)
+
+        actor_loss = -weights * actor_target
         return actor_loss, metrics
 
     def _update_slow_target(self):
