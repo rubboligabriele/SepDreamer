@@ -342,7 +342,7 @@ class Dreamer(nn.Module):
         self._behavior_policy.eval()
 
         with torch.no_grad():
-            for stay_id, data in episodes.items():
+            for stay_id, data in tqdm(episodes.items()):
                 data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
                 B, T, _ = data["features"].shape
                 data = self._wm.preprocess(data)
