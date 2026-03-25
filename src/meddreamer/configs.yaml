@@ -317,31 +317,9 @@ debug:
   # train_batch_length: 80
 
 eval:
-  mode: 'policy_p1' # 'policy_p1', 'policy_p2', 'world_model', 'dreamer'
-  device: 'cuda:0'
-  debug: False
-  seed: 2
-  epochs: 2000
-  eval_every: 1
-  log_every: 1
-  save_every: 1000
-  batch_size: 64
+  mode: policy_p1
   training: False
-  cont_type: 'cont'
-  
-  decoder:
-    {act: 'SiLU', norm: True, mlp_layers: 3, mlp_units: 32, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
-  actor:
-    {layers: 2, dist: 'onehot', entropy: 1e-4, unimix_ratio: 0.1, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-5, eps: 1e-8, grad_clip: 100.0, outscale: 0.01}
-  critic:
-    {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 1e-5, eps: 1e-8, grad_clip: 100.0, outscale: 0.0}
-  reward_head:
-    {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
-  cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} 
-  task: 'ventilation'
-  dataset: 'eicu'
-  num_features: 41
-  num_actions: 18
-  train_batch_length: 50
-  imag_horizon: 15
+  task: sepsis
+  dataset: mimic
+  seed: 0
+  device: cuda
