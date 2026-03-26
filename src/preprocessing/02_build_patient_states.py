@@ -37,7 +37,8 @@ def build_patient_states_derived(
     combined_data = []
     infection_times = []
 
-    bounds = (winb4 * 3600, winaft * 3600)
+    buffer = 4
+    bounds = ((winb4 + buffer) * 3600, (winaft + buffer) * 3600)
 
     # Columns we will copy “as-is” at a given charttime from point-event tables
     point_tables = [
@@ -210,8 +211,8 @@ if __name__ == "__main__":
                         help="Directory in which to output (e.g. data/intermediates/patient_states)")
     parser.add_argument("--data", dest="data_dir", type=str, default=None,
                         help="Data directory (default: ../data)")
-    parser.add_argument("--window-before", dest="window_before", type=int, default=24)
-    parser.add_argument("--window-after", dest="window_after", type=int, default=48)
+    parser.add_argument("--window-before", dest="window_before", type=int, default=25)
+    parser.add_argument("--window-after", dest="window_after", type=int, default=49)
     parser.add_argument("--head", dest="head", type=int, default=None)
     args = parser.parse_args()
 
