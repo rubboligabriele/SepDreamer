@@ -1123,7 +1123,10 @@ def notes(mimiciii=False):
 # }
 
 SQL_QUERY_FUNCTIONS = {
+    "abx": abx,
     "demog": demog,
+    "culture": culture,
+    "microbio": microbio,
     "comorbidities": comorbidities,
     "onset_derived": onset_derived,
     "weight_derived": weight_derived,

@@ -11,8 +11,10 @@ tqdm.pandas()
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 DEFAULT_FILES = [
-    # static
+    "abx.csv",
     "demog.csv",
+    "culture.csv",
+    "microbio.csv",
     "comorbidities.csv",
 
     # onset (from derived.sepsis3)
@@ -125,12 +127,66 @@ def preprocess_one(input_path: str, output_path: str) -> bool:
     return True
 
 
+def build_bacterio_and_clean_abx(input_dir, output_dir):
+
+    culture_path = os.path.join(input_dir, "culture.csv")
+    microbio_path = os.path.join(input_dir, "microbio.csv")
+    abx_path = os.path.join(input_dir, "abx.csv")
+
+    if not (os.path.exists(culture_path) and os.path.exists(microbio_path)):
+        print("[skip] bacterio build: missing culture or microbio")
+        return
+
+    print("Building bacterio.csv")
+
+    culture = load_csv(culture_path, null_icustayid=True)
+    microbio = load_csv(microbio_path, null_icustayid=True)
+
+    # fill missing charttime with chartdate
+    if C_CHARTTIME in microbio.columns and C_CHARTDATE in microbio.columns:
+        ii = microbio[C_CHARTTIME].isnull()
+        microbio.loc[ii, C_CHARTTIME] = microbio.loc[ii, C_CHARTDATE]
+
+    cols = [C_SUBJECT_ID, C_HADM_ID, C_ICUSTAYID, C_CHARTTIME]
+
+    bacterio = pd.concat([
+        microbio[cols],
+        culture[cols]
+    ], ignore_index=True)
+
+    bacterio = bacterio.dropna(subset=[C_ICUSTAYID])
+    bacterio = bacterio.drop_duplicates()
+
+    bacterio.to_csv(os.path.join(output_dir, "bacterio.csv"), index=False)
+
+    print(f"[ok] bacterio.csv ({len(bacterio)} rows)")
+
+    # Clean ABX
+    if not os.path.exists(abx_path):
+        print("[skip] abx clean: missing abx file")
+        return
+
+    print("Cleaning abx.csv")
+
+    abx = load_csv(abx_path, null_icustayid=True)
+
+    abx = abx[
+        (~pd.isna(abx[C_STARTDATE])) &
+        (~pd.isna(abx[C_ICUSTAYID]))
+    ]
+
+    abx = abx.drop_duplicates()
+
+    abx.to_csv(os.path.join(output_dir, "abx.csv"), index=False)
+
+    print(f"[ok] abx.csv ({len(abx)} rows)")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "MedDreamer preprocessing: minimal cleaning of extracted CSVs "
             "(derived tables + onset + static). No binning, no itemid remap, "
-            "no bacterio, no stay_id imputations."
         )
     )
     parser.add_argument(
@@ -159,6 +215,8 @@ if __name__ == "__main__":
     in_dir = args.input_dir or os.path.join(PARENT_DIR, "data", "raw_data")
     out_dir = args.output_dir or os.path.join(PARENT_DIR, "data", "intermediates")
     os.makedirs(out_dir, exist_ok=True)
+
+    build_bacterio_and_clean_abx(in_dir, out_dir)
 
     file_list = args.files if args.files is not None and len(args.files) > 0 else DEFAULT_FILES
 
