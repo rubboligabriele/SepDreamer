@@ -1,6 +1,8 @@
 import os
 import argparse
 import numpy as np
+from src.preprocessing.utils import load_csv
+from src.preprocessing.columns import C_SUBJECT_ID, C_ICUSTAYID, C_RE_ADMISSION
 
 
 REQUIRED_KEYS = [
@@ -158,6 +160,20 @@ def main():
         default=None,
         help="Optional limit on number of files to analyze",
     )
+    parser.add_argument(
+        "--demog-file",
+        type=str,
+        default=None,
+        help="Optional path to demog.csv for reporting patient/stay counts restricted to valid episodes",
+    )
+
+    parser.add_argument(
+        "--states-file",
+        type=str,
+        default=None,
+        help="Optional path to states CSV for reporting readmission counts",
+    )
+
     args = parser.parse_args()
 
     files = sorted(
@@ -182,6 +198,7 @@ def main():
     reward_sums = []
     mortalities = []
     all_action_ids = set()
+    valid_episode_stay_ids = set()
 
     for i, path in enumerate(files):
         ep = load_episode(path)
@@ -192,6 +209,8 @@ def main():
             continue
 
         summary = summarize_episode(ep)
+        valid_episode_stay_ids.add(summary["stay_id"])
+
         lengths.append(summary["T"])
         feature_dims.append(summary["num_features"])
         reward_sums.append(summary["reward_sum"])
@@ -213,6 +232,51 @@ def main():
             print("first 10 is_terminal:", ep["is_terminal"][:10].tolist())
             print("first 10 discount:", ep["discount"][:10].tolist())
 
+    if args.demog_file is not None:
+        print("\n" + "=" * 80)
+        print("DATASET SUMMARY (RESTRICTED TO VALID EPISODES)")
+        print("=" * 80)
+
+        demog = load_csv(args.demog_file)
+
+        needed_demog_cols = [C_SUBJECT_ID, C_ICUSTAYID]
+        for col in needed_demog_cols:
+            if col not in demog.columns:
+                raise ValueError(f"Missing column in demog file: {col}")
+
+        demog_small = demog[[C_SUBJECT_ID, C_ICUSTAYID]].drop_duplicates()
+        demog_small = demog_small[demog_small[C_ICUSTAYID].isin(valid_episode_stay_ids)].copy()
+
+        total_patients = demog_small[C_SUBJECT_ID].nunique()
+        total_stays = demog_small[C_ICUSTAYID].nunique()
+
+        print(f"Total unique patients in valid episodes: {total_patients}")
+        print(f"Total unique ICU stays in valid episodes: {total_stays}")
+
+        if args.states_file is not None:
+            states = load_csv(args.states_file)
+
+            needed_state_cols = [C_ICUSTAYID, C_RE_ADMISSION]
+            for col in needed_state_cols:
+                if col not in states.columns:
+                    raise ValueError(f"Missing column in states file: {col}")
+
+            states_small = states[[C_ICUSTAYID, C_RE_ADMISSION]].drop_duplicates()
+            states_small = states_small[states_small[C_ICUSTAYID].isin(valid_episode_stay_ids)].copy()
+
+            merged = demog_small.merge(states_small, on=C_ICUSTAYID, how="left")
+
+            total_readmission_stays = merged.loc[
+                merged[C_RE_ADMISSION] == 1, C_ICUSTAYID
+            ].nunique()
+
+            total_readmission_patients = merged.loc[
+                merged[C_RE_ADMISSION] == 1, C_SUBJECT_ID
+            ].nunique()
+
+            print(f"Total ICU stays with readmission = 1: {total_readmission_stays}")
+            print(f"Total patients with at least one readmission = 1 stay: {total_readmission_patients}")
+
     print("\n" + "=" * 80)
     print("GLOBAL SUMMARY")
     print("=" * 80)
@@ -222,6 +286,7 @@ def main():
     print(f"Invalid episodes: {len(bad_files)}")
 
     if valid_count > 0:
+        print(f"Unique valid ICU stays: {len(valid_episode_stay_ids)}")
         print(f"Min length: {min(lengths)}")
         print(f"Mean length: {np.mean(lengths):.2f}")
         print(f"Max length: {max(lengths)}")
