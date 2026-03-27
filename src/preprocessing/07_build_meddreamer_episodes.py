@@ -90,7 +90,6 @@ def prepare_episode_for_stay(
     if not np.array_equal(stay_states_raw[C_BLOC].values, expected_bloc):
         print(f"Warning: rebuilding bloc for stay {stay_id}")
 
-
     stay_states_raw[C_BLOC] = np.arange(len(stay_states_raw), dtype=np.int64)
     stay_states_norm[C_BLOC] = np.arange(len(stay_states_norm), dtype=np.int64)
 
@@ -110,21 +109,36 @@ def prepare_episode_for_stay(
     if not np.array_equal(state_ts, delta_ts):
         raise ValueError(f"Timestep mismatch between states/delta for stay {stay_id}")
 
-    # We keep all states.
-    # Actions are expected either:
-    #   1) on the first T-1 state timesteps (preferred; we then shift with no-op at t=0)
-    #   2) already length T and aligned to states (fallback)
-    if len(action_ts) == len(state_ts) - 1 and np.array_equal(action_ts, state_ts[:-1]):
-        action_input = stay_actions[action_cols[0]].astype(np.float32).fillna(0.0).values
-        action_vaso = stay_actions[action_cols[1]].astype(np.float32).fillna(0.0).values
-        action_ids_raw = transform_actions(action_input, action_vaso, action_cutoffs)
+    # Dreamer-style alignment:
+    # state row t corresponds to s_t
+    # action stored with state t is interpreted as outgoing a_t
+    # but RSSM expects action tensor aligned as previous action:
+    #   action_for_row[0] = no-op
+    #   action_for_row[t] = a_{t-1} for t >= 1
+    #
+    # Supported input layouts:
+    #   1) actions on first T-1 timesteps: action_ts == state_ts[:-1]
+    #   2) actions already length T and aligned to state_ts: we still shift right
+    #      and drop the last outgoing action, because there is no next retained state
+    #      to associate it with inside the current episode tensor.
+    action_input = stay_actions[action_cols[0]].astype(np.float32).fillna(0.0).values
+    action_vaso = stay_actions[action_cols[1]].astype(np.float32).fillna(0.0).values
+    action_ids_raw = transform_actions(action_input, action_vaso, action_cutoffs)
 
-        no_op_id = 0
+    no_op_id = 0
+
+    if len(action_ts) == len(state_ts) - 1 and np.array_equal(action_ts, state_ts[:-1]):
+        # Preferred case:
+        # raw actions are a_0 ... a_{T-2}, shift to [no-op, a_0, ..., a_{T-2}]
         action_ids = np.concatenate([[no_op_id], action_ids_raw], axis=0)
+
     elif len(action_ts) == len(state_ts) and np.array_equal(action_ts, state_ts):
-        action_input = stay_actions[action_cols[0]].astype(np.float32).fillna(0.0).values
-        action_vaso = stay_actions[action_cols[1]].astype(np.float32).fillna(0.0).values
-        action_ids = transform_actions(action_input, action_vaso, action_cutoffs)
+        # Full RL-style rows:
+        # raw actions are a_0 ... a_{T-1}, but for Dreamer state-aligned storage
+        # we need previous-action indexing:
+        # [no-op, a_0, ..., a_{T-2}]
+        action_ids = np.concatenate([[no_op_id], action_ids_raw[:-1]], axis=0)
+
     else:
         raise ValueError(
             f"Unexpected state/action timestep pattern for stay {stay_id}. "
@@ -133,7 +147,7 @@ def prepare_episode_for_stay(
 
     if len(action_ids) != len(state_ts):
         raise ValueError(
-            f"After alignment, action length != state length for stay {stay_id}: "
+            f"After Dreamer alignment, action length != state length for stay {stay_id}: "
             f"{len(action_ids)} vs {len(state_ts)}"
         )
 
@@ -160,6 +174,9 @@ def prepare_episode_for_stay(
         mask = mask_base
         delta = delta_base
 
+    # Reward is kept as stored in the state rows.
+    # This preserves the same convention used before:
+    # reward[t] stays attached to state row t.
     reward = stay_states_raw[reward_col].astype(np.float32).fillna(0.0).values
     timesteps = stay_states_raw[C_BLOC].astype(np.float32).values
 
