@@ -74,7 +74,8 @@ python -m src.preprocessing.05_build_sepsis_cohort \
     --mask data/intermediates/patient_states/mask.csv \
     --delta data/intermediates/patient_states/delta.csv \
     --qstime data/intermediates/patient_states/qstime.csv \
-    --output-dir data/final_cohort
+    --output-dir data/final_cohort \
+    --keep-multiple-icu-stays
 fi
 
 if run_step 6; then
