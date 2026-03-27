@@ -150,7 +150,8 @@ def compute_mask_delta(df, feature_cols, id_cols):
         C_AGE,
         C_GENDER,
         C_ELIXHAUSER,
-        "readmission",
+        C_RE_ADMISSION,
+        C_WEIGHT,
     ]
     static_cols = [c for c in static_cols if c in feature_cols]
 
