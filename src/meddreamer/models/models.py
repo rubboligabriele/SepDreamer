@@ -854,33 +854,35 @@ class BehaviorPolicy(nn.Module):
         dist = tools.OneHotDist(logits)
         return dist
 
-    def train_batch(self, feat, action_onehot):
+def train_batch(self, feat, action_onehot):
+    self.train()
 
-        self.train()
+    # Dataset semantics:
+    # feat[t]   = s_t
+    # action[t] = action that led to s_t
+    #
+    # Therefore behavior cloning should learn:
+    #   pi_b(a_{t+1} | s_t)
 
-        # dataset semantics:
-        # feat[t]   = s_t
-        # action[t] = action that led to s_t
+    feat_input = feat[:, :-1]             # s_t
+    action_target = action_onehot[:, 1:]  # a_{t+1}
 
-        feat_input = feat[:, :-1]           # s_t
-        action_target = action_onehot[:, 1:] # a_{t+1}
+    with tools.RequiresGrad(self):
+        dist = self(feat_input)
+        loss = -dist.log_prob(action_target).mean()
+        metrics = self._opt(loss, self.parameters(), retain_graph=False)
 
-        with tools.RequiresGrad(self):
-            dist = self(feat_input)
-            loss = -dist.log_prob(action_target).mean()
-            metrics = self._opt(loss, self.parameters(), retain_graph=False)
+    with torch.no_grad():
+        pred = dist.mode().argmax(-1)
+        true = action_target.argmax(-1)
 
-        with torch.no_grad():
-            pred = dist.mode().argmax(-1)
-            true = action_target.argmax(-1)
+        accuracy = (pred == true).float().mean()
+        p_clin = torch.exp(dist.log_prob(action_target)).mean()
+        entropy = dist.entropy().mean()
 
-            accuracy = (pred == true).float().mean()
-            p_clin = torch.exp(dist.log_prob(action_target)).mean()
-            entropy = dist.entropy().mean()
+    metrics["behavior_loss"] = to_np(loss)
+    metrics["behavior_acc"] = to_np(accuracy)
+    metrics["behavior_avg_p"] = to_np(p_clin)
+    metrics["behavior_entropy"] = to_np(entropy)
 
-        metrics["behavior_loss"] = to_np(loss)
-        metrics["behavior_acc"] = to_np(accuracy)
-        metrics["behavior_avg_p"] = to_np(p_clin)
-        metrics["behavior_entropy"] = to_np(entropy)
-
-        return metrics
+    return metrics

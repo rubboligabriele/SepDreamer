@@ -136,67 +136,41 @@ def add_reward_to_dataframe(
     c2=DEFAULT_C2,
     r_terminal=DEFAULT_R_TERMINAL,
 ):
-    """
-    RL-consistent reward construction.
-
-    For each ICU stay with raw states s0 ... s_{T-1}:
-
-    - we KEEP only rows 0 ... T-2
-    - reward[k] =
-        intermediate reward for k < T-2
-        terminal reward for k = T-2
-
-    The final raw state s_{T-1} is dropped.
-    """
-
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).copy()
-
-    kept_rows = []
-    rewards = []
+    rewards = np.zeros(len(df), dtype=np.float32)
 
     for _, g in df.groupby(C_ICUSTAYID, sort=False):
+        idx = g.index.to_list()
 
-        g = g.sort_values(C_TIMESTEP)
-
-        if len(g) < 2:
-            # cannot build a transition → skip stay
+        if len(idx) == 0:
             continue
 
-        rows = g.to_dict("records")
+        # no previous state, so reward is 0
+        first_i = idx[0]
+        rewards[df.index.get_loc(first_i)] = 0.0
 
-        T = len(rows)
+        for k in range(1, len(idx)):
+            prev_i = idx[k - 1]
+            cur_i = idx[k]
 
-        # we will keep rows 0 ... T-2
-        for k in range(T - 1):
-
-            row_t = rows[k]
-
-            # last RL step → terminal reward
-            if k == T - 2:
-
-                r = compute_terminal_reward(
-                    died=bool(row_t[outcome_col]),
+            # terminal reward
+            if k == len(idx) - 1:
+                if pd.isna(df.loc[cur_i, outcome_col]):
+                    raise ValueError("Missing terminal outcome")
+                rewards[df.index.get_loc(cur_i)] = compute_terminal_reward(
+                    died=bool(df.loc[cur_i, outcome_col]),
                     r_terminal=r_terminal,
                 )
-
             else:
-
-                row_tp1 = rows[k + 1]
-
-                r = compute_intermediate_reward(
-                    sofa_t=row_t[sofa_col],
-                    sofa_tp1=row_tp1[sofa_col],
-                    lactate_t=row_t[lactate_col],
-                    lactate_tp1=row_tp1[lactate_col],
+                rewards[df.index.get_loc(cur_i)] = compute_intermediate_reward(
+                    sofa_t=df.loc[prev_i, sofa_col],
+                    sofa_tp1=df.loc[cur_i, sofa_col],
+                    lactate_t=df.loc[prev_i, lactate_col],
+                    lactate_tp1=df.loc[cur_i, lactate_col],
                     c0=c0,
                     c1=c1,
                     c2=c2,
                 )
 
-            kept_rows.append(row_t)
-            rewards.append(r)
-
-    out = pd.DataFrame(kept_rows)
-    out[reward_col] = np.array(rewards, dtype=np.float32)
-
-    return out
+    df[reward_col] = rewards
+    return df
