@@ -1,6 +1,7 @@
 import os
 import argparse
 import numpy as np
+
 from src.preprocessing.utils import load_csv
 from src.preprocessing.columns import C_SUBJECT_ID, C_ICUSTAYID, C_RE_ADMISSION
 
@@ -19,6 +20,10 @@ REQUIRED_KEYS = [
     "mortality",
 ]
 
+OPTIONAL_KEYS = [
+    "sofa",
+]
+
 
 def load_episode(path: str) -> dict:
     data = np.load(path)
@@ -28,15 +33,22 @@ def load_episode(path: str) -> dict:
 def check_one_hot(actions: np.ndarray) -> tuple[bool, str]:
     if actions.ndim != 2:
         return False, f"action ndim is {actions.ndim}, expected 2"
+
     row_sums = actions.sum(axis=1)
     if not np.allclose(row_sums, 1.0):
         return False, "some action rows do not sum to 1"
+
     if not np.all((actions == 0.0) | (actions == 1.0)):
         return False, "action matrix is not binary one-hot"
+
     return True, "ok"
 
 
-def check_episode(ep: dict, expected_num_actions: int | None = None) -> list[str]:
+def check_episode(
+    ep: dict,
+    expected_num_actions: int | None = None,
+    allow_sofa_nan: bool = True,
+) -> list[str]:
     errors = []
 
     for key in REQUIRED_KEYS:
@@ -86,11 +98,13 @@ def check_episode(ep: dict, expected_num_actions: int | None = None) -> list[str
     if T > 0:
         if ep["is_first"][0] != 1:
             errors.append("is_first[0] is not 1")
+
         if np.sum(ep["is_first"]) != 1:
             errors.append("is_first should contain exactly one 1")
 
         if ep["is_terminal"][-1] != 1:
             errors.append("last is_terminal is not 1")
+
         if np.sum(ep["is_terminal"]) != 1:
             errors.append("is_terminal should contain exactly one 1")
 
@@ -103,19 +117,40 @@ def check_episode(ep: dict, expected_num_actions: int | None = None) -> list[str
         if not np.all(np.diff(ep["timestep"]) >= 0):
             errors.append("timesteps are not sorted non-decreasingly")
 
+    # Check NaN / Inf for numeric arrays.
+    # SOFA can legitimately contain NaNs, so it is handled separately.
     for key, value in ep.items():
-        if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.number):
-            if np.isnan(value).any():
-                errors.append(f"{key} contains NaN")
+        if not isinstance(value, np.ndarray):
+            continue
+        if not np.issubdtype(value.dtype, np.number):
+            continue
+
+        if key == "sofa" and allow_sofa_nan:
             if np.isinf(value).any():
-                errors.append(f"{key} contains Inf")
+                errors.append("sofa contains Inf")
+            continue
+
+        if np.isnan(value).any():
+            errors.append(f"{key} contains NaN")
+
+        if np.isinf(value).any():
+            errors.append(f"{key} contains Inf")
+
+    # Optional SOFA checks.
+    if "sofa" in ep:
+        if len(ep["sofa"]) != T:
+            errors.append(f"sofa length {len(ep['sofa'])} != timestep length {T}")
+
+        if ep["sofa"].ndim != 1:
+            errors.append(f"sofa ndim is {ep['sofa'].ndim}, expected 1")
 
     return errors
 
 
 def summarize_episode(ep: dict) -> dict:
     action_ids = np.argmax(ep["action"], axis=1)
-    return {
+
+    summary = {
         "stay_id": int(ep["icustayid"][0]) if len(ep["icustayid"]) > 0 else None,
         "T": len(ep["timestep"]),
         "num_features": ep["features"].shape[1],
@@ -130,6 +165,25 @@ def summarize_episode(ep: dict) -> dict:
         "mask_observed_fraction": float(ep["mask"].mean()),
         "delta_mean": float(ep["delta"].mean()),
     }
+
+    if "sofa" in ep:
+        sofa = ep["sofa"]
+        sofa_valid = sofa[~np.isnan(sofa)]
+
+        summary["sofa_missing_fraction"] = float(np.isnan(sofa).mean())
+
+        if len(sofa_valid) > 0:
+            summary["sofa_min"] = float(np.min(sofa_valid))
+            summary["sofa_max"] = float(np.max(sofa_valid))
+            summary["sofa_first_valid"] = float(sofa_valid[0])
+            summary["sofa_last_valid"] = float(sofa_valid[-1])
+        else:
+            summary["sofa_min"] = None
+            summary["sofa_max"] = None
+            summary["sofa_first_valid"] = None
+            summary["sofa_last_valid"] = None
+
+    return summary
 
 
 def main():
@@ -166,12 +220,16 @@ def main():
         default=None,
         help="Optional path to demog.csv for reporting patient/stay counts restricted to valid episodes",
     )
-
     parser.add_argument(
         "--states-file",
         type=str,
         default=None,
         help="Optional path to states CSV for reporting readmission counts",
+    )
+    parser.add_argument(
+        "--strict-sofa",
+        action="store_true",
+        help="If set, NaNs in sofa are treated as errors",
     )
 
     args = parser.parse_args()
@@ -197,12 +255,17 @@ def main():
     feature_dims = []
     reward_sums = []
     mortalities = []
+    sofa_missing_fractions = []
     all_action_ids = set()
     valid_episode_stay_ids = set()
 
     for i, path in enumerate(files):
         ep = load_episode(path)
-        errors = check_episode(ep, expected_num_actions=args.num_actions)
+        errors = check_episode(
+            ep,
+            expected_num_actions=args.num_actions,
+            allow_sofa_nan=not args.strict_sofa,
+        )
 
         if errors:
             bad_files.append((path, errors))
@@ -216,6 +279,9 @@ def main():
         reward_sums.append(summary["reward_sum"])
         mortalities.append(summary["mortality"])
         all_action_ids.update(summary["unique_actions"])
+
+        if "sofa_missing_fraction" in summary:
+            sofa_missing_fractions.append(summary["sofa_missing_fraction"])
 
         if i < args.show:
             print("\n" + "=" * 80)
@@ -231,6 +297,9 @@ def main():
             print("first 10 is_first:", ep["is_first"][:10].tolist())
             print("first 10 is_terminal:", ep["is_terminal"][:10].tolist())
             print("first 10 discount:", ep["discount"][:10].tolist())
+
+            if "sofa" in ep:
+                print("first 10 sofa:", ep["sofa"][:10].tolist())
 
     if args.demog_file is not None:
         print("\n" + "=" * 80)
@@ -296,6 +365,11 @@ def main():
         print(f"Reward sum max: {np.max(reward_sums):.4f}")
         print(f"Mortality mean: {np.mean(mortalities):.4f}")
         print(f"Observed action ids: {sorted(all_action_ids)}")
+
+        if len(sofa_missing_fractions) > 0:
+            print(f"Mean SOFA missing fraction: {np.mean(sofa_missing_fractions):.4f}")
+            print(f"Min SOFA missing fraction: {np.min(sofa_missing_fractions):.4f}")
+            print(f"Max SOFA missing fraction: {np.max(sofa_missing_fractions):.4f}")
 
     if bad_files:
         print("\n" + "=" * 80)

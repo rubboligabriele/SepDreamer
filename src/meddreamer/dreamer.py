@@ -48,6 +48,7 @@ class Dreamer(nn.Module):
         ai_episode_returns = []
         ai_actions = []
         phys_actions = []
+        sofas = []
         mortalities = []
         full_mort = []
         valid_episodes = 0
@@ -178,6 +179,10 @@ class Dreamer(nn.Module):
                 actions = np.stack(actions, axis=1)
                 ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
                 phys_actions.append(np.argmax(to_np(phys_action[0, 5:]), axis=-1))
+
+                if "sofa" in data:
+                    sofas.append(to_np(data["sofa"][0, 5:]))
+
                 full_mort.append(to_np(data["mortality"][0, 5:]))
                 ai_episode_returns.append(ai_episode_return)
 
@@ -207,6 +212,12 @@ class Dreamer(nn.Module):
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
         ai_actions = np.concatenate(ai_actions, axis=0)
         phys_actions = np.concatenate(phys_actions, axis=0)
+
+        if len(sofas) > 0:
+            sofas = np.concatenate(sofas, axis=0)
+        else:
+            sofas = np.array([], dtype=np.float32)
+
         full_mort = np.concatenate(full_mort, axis=0)
         mortalities = np.array(mortalities, dtype=np.float32)
 
@@ -239,6 +250,8 @@ class Dreamer(nn.Module):
             "phys_action": phys_actions,
             "ai_action": ai_actions,
         }
+        if len(sofas) > 0:
+            data_out["sofa"] = sofas
         df = pd.DataFrame(data_out)
         df.to_csv(os.path.join(self._logdir, f"result_data_{epoch}.csv"), index=False)
 
