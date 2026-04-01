@@ -128,15 +128,9 @@ def prepare_episode_for_stay(
     no_op_id = 0
 
     if len(action_ts) == len(state_ts) - 1 and np.array_equal(action_ts, state_ts[:-1]):
-        # Preferred case:
-        # raw actions are a_0 ... a_{T-2}, shift to [no-op, a_0, ..., a_{T-2}]
         action_ids = np.concatenate([[no_op_id], action_ids_raw], axis=0)
 
     elif len(action_ts) == len(state_ts) and np.array_equal(action_ts, state_ts):
-        # Full RL-style rows:
-        # raw actions are a_0 ... a_{T-1}, but for Dreamer state-aligned storage
-        # we need previous-action indexing:
-        # [no-op, a_0, ..., a_{T-2}]
         action_ids = np.concatenate([[no_op_id], action_ids_raw[:-1]], axis=0)
 
     else:
@@ -174,9 +168,6 @@ def prepare_episode_for_stay(
         mask = mask_base
         delta = delta_base
 
-    # Reward is kept as stored in the state rows.
-    # This preserves the same convention used before:
-    # reward[t] stays attached to state row t.
     reward = stay_states_raw[reward_col].astype(np.float32).fillna(0.0).values
     timesteps = stay_states_raw[C_BLOC].astype(np.float32).values
 
@@ -184,6 +175,12 @@ def prepare_episode_for_stay(
         raise ValueError(f"Outcome column '{outcome_col}' not found in states file")
     outcome_value = float(stay_states_raw[outcome_col].iloc[0])
     mortality = np.full(len(state_ts), outcome_value, dtype=np.float32)
+
+    # Save raw SOFA values for downstream evaluation / stratification.
+    if C_SOFA in stay_states_raw.columns:
+        sofa = stay_states_raw[C_SOFA].astype(np.float32).values
+    else:
+        sofa = np.full(len(state_ts), np.nan, dtype=np.float32)
 
     is_first = build_is_first(len(state_ts)).astype(np.float32)
     is_terminal = build_is_terminal(len(state_ts)).astype(np.float32)
@@ -203,6 +200,7 @@ def prepare_episode_for_stay(
         "is_terminal": is_terminal,
         "discount": discount,
         "mortality": mortality,
+        "sofa": sofa.astype(np.float32),
     }
 
     return episode
