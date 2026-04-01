@@ -340,7 +340,10 @@ class ImagBehavior(nn.Module):
             feat_real = feat[:-1]                # (T-1, B, D) current real states s_t
             action_real = action[1:]             # (T-1, B, A) next real actions a_{t+1}
             reward_real = reward_real_full[1:]   # (T-1, B, 1) next real rewards r_{t+1}
-            cont_real = cont_real_full[1:]       # (T-1, B, 1) or (T-1, B, 3)
+            if self._config.cont_type == "mort3":
+                cont_real = cont_real_full[1:][..., 2:3]
+            else:
+                cont_real = cont_real_full[1:]       # (T-1, B, 1) or (T-1, B, 3)
 
             # Start imagination from the final real latent state s_T
             init = {k: v[:, -1] for k, v in start.items()}
@@ -718,6 +721,8 @@ class ImagBehavior(nn.Module):
             metrics.update(tools.tensorstats(normed_target, "normed_target"))
             metrics["EMA_005"] = to_np(self.ema_vals[0])
             metrics["EMA_095"] = to_np(self.ema_vals[1])
+        else:
+            adv = target - base
 
         if self._config.imag_gradient == "dynamics":
             actor_target = adv
@@ -854,35 +859,35 @@ class BehaviorPolicy(nn.Module):
         dist = tools.OneHotDist(logits)
         return dist
 
-def train_batch(self, feat, action_onehot):
-    self.train()
+    def train_batch(self, feat, action_onehot):
+        self.train()
 
-    # Dataset semantics:
-    # feat[t]   = s_t
-    # action[t] = action that led to s_t
-    #
-    # Therefore behavior cloning should learn:
-    #   pi_b(a_{t+1} | s_t)
+        # Dataset semantics:
+        # feat[t]   = s_t
+        # action[t] = action that led to s_t
+        #
+        # Therefore behavior cloning should learn:
+        #   pi_b(a_{t+1} | s_t)
 
-    feat_input = feat[:, :-1]             # s_t
-    action_target = action_onehot[:, 1:]  # a_{t+1}
+        feat_input = feat[:, :-1]             # s_t
+        action_target = action_onehot[:, 1:]  # a_{t+1}
 
-    with tools.RequiresGrad(self):
-        dist = self(feat_input)
-        loss = -dist.log_prob(action_target).mean()
-        metrics = self._opt(loss, self.parameters(), retain_graph=False)
+        with tools.RequiresGrad(self):
+            dist = self(feat_input)
+            loss = -dist.log_prob(action_target).mean()
+            metrics = self._opt(loss, self.parameters(), retain_graph=False)
 
-    with torch.no_grad():
-        pred = dist.mode().argmax(-1)
-        true = action_target.argmax(-1)
+        with torch.no_grad():
+            pred = dist.mode().argmax(-1)
+            true = action_target.argmax(-1)
 
-        accuracy = (pred == true).float().mean()
-        p_clin = torch.exp(dist.log_prob(action_target)).mean()
-        entropy = dist.entropy().mean()
+            accuracy = (pred == true).float().mean()
+            p_clin = torch.exp(dist.log_prob(action_target)).mean()
+            entropy = dist.entropy().mean()
 
-    metrics["behavior_loss"] = to_np(loss)
-    metrics["behavior_acc"] = to_np(accuracy)
-    metrics["behavior_avg_p"] = to_np(p_clin)
-    metrics["behavior_entropy"] = to_np(entropy)
+        metrics["behavior_loss"] = to_np(loss)
+        metrics["behavior_acc"] = to_np(accuracy)
+        metrics["behavior_avg_p"] = to_np(p_clin)
+        metrics["behavior_entropy"] = to_np(entropy)
 
-    return metrics
+        return metrics
