@@ -333,14 +333,9 @@ class Dreamer(nn.Module):
         valid_episodes = 0
         cont_acc = 0.0
         recon_error = 0.0
-        reward_error = 0.0
-        reward_error_post = 0.0
-        reward_error_prior = 0.0
-        reward_symlog_error = 0.0
-        reward_pred_mean = 0.0
-        reward_pred_std = 0.0
-        reward_true_mean = 0.0
-        reward_true_std = 0.0
+        reward_nll = 0.0
+        reward_nll_post = 0.0
+        reward_nll_prior = 0.0
         true_mortality = 0
         imag_rewards = 0.0
 
@@ -377,9 +372,11 @@ class Dreamer(nn.Module):
                 full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first)
 
                 states = {k: v[:, :5] for k, v in full_states.items()}
-                recon = self._wm.heads["decoder"](self._wm.dynamics.get_feat(states))["features"].mode()
-                reward_post = self._wm.heads["reward"](self._wm.dynamics.get_feat(states)).mode()
-                cont_post = self._wm.heads["cont"](self._wm.dynamics.get_feat(states)).mode()
+                feat_post = self._wm.dynamics.get_feat(states)
+
+                recon = self._wm.heads["decoder"](feat_post)["features"].mode()
+                reward_head_post = self._wm.heads["reward"](feat_post)
+                cont_post = self._wm.heads["cont"](feat_post).mode()
                 init = {k: v[:, 4] for k, v in full_states.items()}
 
                 if phys_action.shape[1] <= 5:
@@ -389,30 +386,38 @@ class Dreamer(nn.Module):
                 valid_episodes += 1
 
                 prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
-                openl = self._wm.heads["decoder"](self._wm.dynamics.get_feat(prior))["features"].mode()
-                reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
+                feat_prior = self._wm.dynamics.get_feat(prior)
+
+                openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
+                reward_head_prior = self._wm.heads["reward"](feat_prior)
+                reward_prior = reward_head_prior.mode()
                 phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
-                cont_prior = self._wm.heads["cont"](self._wm.dynamics.get_feat(prior)).mode()
+                cont_prior = self._wm.heads["cont"](feat_prior).mode()
 
                 model = torch.cat([recon[:, :5], openl], 1)
-                comb_reward = torch.cat([reward_post[:, :5], reward_prior], 1)
                 comb_cont = torch.cat([cont_post[:, :5], cont_prior], 1)
 
                 error = ((model - data["features"]) ** 2) * data["mask"]
-                recon_error += (error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)).mean().item()
+                recon_error += (
+                    error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)
+                ).mean().item()
 
-                reward_error += ((comb_reward - data["reward"]) ** 2).mean().item()
-                reward_error_post += ((reward_post[:, :5] - data["reward"][:, :5]) ** 2).mean().item()
-                reward_error_prior += ((reward_prior - data["reward"][:, 5:]) ** 2).mean().item()
+                reward_nll_post += (
+                    -reward_head_post.log_prob(data["reward"][:, :5])
+                ).mean().item()
 
-                pred_symlog = tools.symlog(comb_reward)
-                true_symlog = tools.symlog(data["reward"])
-                reward_symlog_error += ((pred_symlog - true_symlog) ** 2).mean().item()
+                reward_nll_prior += (
+                    -reward_head_prior.log_prob(data["reward"][:, 5:])
+                ).mean().item()
 
-                reward_pred_mean += comb_reward.mean().item()
-                reward_pred_std += comb_reward.std().item()
-                reward_true_mean += data["reward"].mean().item()
-                reward_true_std += data["reward"].std().item()
+                reward_nll += (
+                    (
+                        -reward_head_post.log_prob(data["reward"][:, :5])
+                    ).mean()
+                    + (
+                        -reward_head_prior.log_prob(data["reward"][:, 5:])
+                    ).mean()
+                ).item()
 
                 cont_acc += tools.compute_accuracy(comb_cont, data["cont"])
 
@@ -420,7 +425,9 @@ class Dreamer(nn.Module):
                     imag_feat, imag_state, imag_action = self._task_behavior._imagine_in_time(
                         init, self._task_behavior.actor, 50
                     )
-                    imag_reward = self._wm.heads["reward"](self._wm.dynamics.get_feat(imag_state)).mode()
+                    imag_reward = self._wm.heads["reward"](
+                        self._wm.dynamics.get_feat(imag_state)
+                    ).mode()
                     imag_rewards += float(to_np(imag_reward.sum()))
 
                     actions = []
@@ -452,7 +459,9 @@ class Dreamer(nn.Module):
                         logp_ai = ai_dist_real.log_prob(clin_action_onehot)
                         pi_ai = torch.exp(logp_ai)
 
-                        logp_b = tools.behavior_log_prob(self._behavior_policy, inp_real, clin_action_onehot)
+                        logp_b = tools.behavior_log_prob(
+                            self._behavior_policy, inp_real, clin_action_onehot
+                        )
                         pi_b = torch.exp(logp_b)
 
                         if len(ope_trajs) < 3 and t < 15:
@@ -515,14 +524,9 @@ class Dreamer(nn.Module):
             return
 
         metrics["recon_error"] = recon_error / valid_episodes
-        metrics["reward_error"] = reward_error / valid_episodes
-        metrics["reward_error_post"] = reward_error_post / valid_episodes
-        metrics["reward_error_prior"] = reward_error_prior / valid_episodes
-        metrics["reward_symlog_error"] = reward_symlog_error / valid_episodes
-        metrics["reward_pred_mean"] = reward_pred_mean / valid_episodes
-        metrics["reward_pred_std"] = reward_pred_std / valid_episodes
-        metrics["reward_true_mean"] = reward_true_mean / valid_episodes
-        metrics["reward_true_std"] = reward_true_std / valid_episodes
+        metrics["reward_nll"] = reward_nll / valid_episodes
+        metrics["reward_nll_post"] = reward_nll_post / valid_episodes
+        metrics["reward_nll_prior"] = reward_nll_prior / valid_episodes
         metrics["cont_acc"] = cont_acc / valid_episodes
 
         if self._config.mode != "world_model":

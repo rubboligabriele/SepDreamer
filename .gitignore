@@ -31,3 +31,6 @@ wheels/
 # habrok files
 *.err
 *.out
+
+# analysis files
+/reward_analysis
