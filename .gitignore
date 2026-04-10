@@ -22,8 +22,7 @@ wheels/
 /data
 
 # Logs and temporary files
-/logs
-/logs_final_eval
+/logs*
 
 # Launch script for Habrok
 /launch.sh

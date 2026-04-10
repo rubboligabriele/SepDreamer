@@ -234,7 +234,7 @@ class Dreamer(nn.Module):
 
         metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
         metrics["ai_mortality"] = round(ai_mortality * 100, 2)
-        metrics["true_mortality"] = true_mortality
+        metrics["true_mortality"] = round(true_mortality * 100, 2)
 
         # OPE metrics
         metrics["wis"] = ope_metrics["wis"]
@@ -550,7 +550,7 @@ class Dreamer(nn.Module):
             mortality_decrease = true_mortality - ai_mortality
 
             metrics["ai_mortality"] = round(ai_mortality * 100, 2)
-            metrics["true_mortality"] = true_mortality
+            metrics["true_mortality"] = round(true_mortality * 100, 2)
             metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
             metrics["imag_episode_return"] = imag_rewards / valid_episodes
             metrics["ai_episode_return"] = float(ai_episode_returns.mean())
