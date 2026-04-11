@@ -833,16 +833,19 @@ class BehaviorPolicy(nn.Module):
         else:
             input_dim = config.dyn_stoch + config.dyn_deter
 
+        bp = config.behavior_model
+        hidden_size = bp.get("hidden_size", 16)
+        num_layers = bp.get("num_layers", 1)
+
         self.lstm = nn.LSTM(
             input_size=input_dim,
-            hidden_size=16,
-            num_layers=1,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
             batch_first=True
         )
 
-        self.head = nn.Linear(16, config.num_actions)
+        self.head = nn.Linear(hidden_size, config.num_actions)
 
-        bp = config.behavior_model
         self._opt = tools.Optimizer(
             "behavior",
             self.parameters(),
