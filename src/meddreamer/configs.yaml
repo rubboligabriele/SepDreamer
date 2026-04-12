@@ -81,6 +81,14 @@ defaults:
   imag_gradient_mix: 0.0
   eval_state_mean: False
 
+eval-wm:
+  mode: world_model
+  training: False
+  task: sepsis
+  dataset: mimic
+  seed: 0
+  device: cuda
+
 behavior:
   mode: 'behavior'
   epochs: 10000
