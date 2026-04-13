@@ -32,4 +32,4 @@ wheels/
 *.out
 
 # analysis files
-/reward_analysis
+/analysis*
