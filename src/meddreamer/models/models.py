@@ -187,24 +187,75 @@ class WorldModel(nn.Module):
         post = {k: v.detach() for k, v in post.items()}
         return post, context, metrics
     
-    def _load(self, data):
+    def _load(self, data, debug=False, debug_name=""):
         B, T, _ = data["features"].shape
         data = self.preprocess(data)
+
         flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
         unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
+
         features = flatten(data["features"])
         if self._config.fm["use_fm"]:
-            delta = flatten(data["delta"]) 
+            delta = flatten(data["delta"])
         else:
             delta = None
+
         embed = self.encoder(features, delta)
         embed = unflatten(embed)
+
         action = data["action"].detach().clone()
         is_first = data["is_first"].detach().clone()
-        post, prior = self.dynamics.observe(
-                embed, action, is_first
-            )
+
+        if debug:
+            print(f"\n[LOAD DEBUG] {debug_name}")
+            print("features shape:", tuple(data["features"].shape))
+            print("embed shape:", tuple(embed.shape))
+            print("action shape:", tuple(action.shape))
+            print("reward shape:", tuple(data["reward"].shape))
+            print("is_first shape:", tuple(is_first.shape))
+            print("delta shape:", tuple(data["delta"].shape) if "delta" in data else None)
+
+            max_t = min(10, T)
+            for t in range(max_t):
+                a_idx = int(torch.argmax(action[0, t]).item())
+                r_val = float(data["reward"][0, t].item())
+                first_val = float(is_first[0, t].item())
+                print(
+                    f"t={t:02d} "
+                    f"action_idx={a_idx:02d} "
+                    f"reward={r_val:8.4f} "
+                    f"is_first={first_val:.0f} "
+                    f"embed_norm={float(embed[0, t].norm().item()):.4f}"
+                )
+
+        # attiva debug interno RSSM solo se richiesto
+        if debug:
+            self.dynamics._debug_mode = True
+            self.dynamics._debug_obs_counter = 0
+        else:
+            self.dynamics._debug_mode = False
+            self.dynamics._debug_obs_counter = 0
+
+        post, prior = self.dynamics.observe(embed, action, is_first, debug=debug)
+
+        self.dynamics._debug_mode = False
+
         post = {k: v.detach() for k, v in post.items()}
+
+        if debug:
+            print("\n[LOAD DEBUG - POST STATE SUMMARY]")
+            for k, v in post.items():
+                print(k, tuple(v.shape))
+            max_t = min(5, T)
+            for t in range(max_t):
+                deter_norm = float(post["deter"][0, t].norm().item())
+                stoch_norm = float(post["stoch"][0, t].float().norm().item())
+                print(
+                    f"post t={t:02d} "
+                    f"deter_norm={deter_norm:.4f} "
+                    f"stoch_norm={stoch_norm:.4f}"
+                )
+
         return post, embed, data
 
     # this function is called during both rollout and training

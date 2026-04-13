@@ -54,11 +54,11 @@ def main(config):
         test_stay_ids = splits["test"]
     else:
         trainval_stay_ids, test_stay_ids = train_test_split(
-            all_stay_ids, train_size=0.6, random_state=config.seed
+            all_stay_ids, train_size=0.8, random_state=config.seed
         )
 
         train_stay_ids, val_stay_ids = train_test_split(
-            trainval_stay_ids, test_size=0.2, random_state=config.seed
+            trainval_stay_ids, test_size=0.125, random_state=config.seed
         )
 
         splits = {

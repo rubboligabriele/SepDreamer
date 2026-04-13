@@ -59,6 +59,8 @@ class Dreamer(nn.Module):
         self._task_behavior.eval()
         self._behavior_policy.eval()
 
+        first_debug_done = False
+
         with torch.no_grad():
             for stay_id, data in tqdm(episodes.items()):
                 data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
@@ -85,12 +87,54 @@ class Dreamer(nn.Module):
 
                 valid_episodes += 1
 
-                full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first)
+                debug_now = not first_debug_done
+                if debug_now:
+                    print(f"\n{'='*80}")
+                    print(f"[EVAL DEBUG] FIRST STAY = {stay_id}")
+                    print(f"{'='*80}")
+
+                    max_t = min(12, phys_action.shape[1])
+                    print("\n[FIRST STAY ALIGNMENT TABLE]")
+                    for t in range(max_t):
+                        a_idx = int(torch.argmax(phys_action[0, t]).item())
+                        r_val = float(data["reward"][0, t].item())
+                        mort = float(data["mortality"][0, t].item())
+                        print(
+                            f"t={t:02d} "
+                            f"action_idx={a_idx:02d} "
+                            f"reward={r_val:8.4f} "
+                            f"mortality={mort:.0f}"
+                        )
+
+                if debug_now:
+                    self._wm.dynamics._debug_mode = True
+                    self._wm.dynamics._debug_obs_counter = 0
+                else:
+                    self._wm.dynamics._debug_mode = False
+
+                full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first, debug=debug_now)
+                self._wm.dynamics._debug_mode = False
 
                 states = {k: v[:, :5] for k, v in full_states.items()}
                 init = {k: v[:, 4] for k, v in full_states.items()}
 
+                if debug_now:
+                    print("\n[ROLLOUT START]")
+                    print("init state taken from t=4")
+                    print("first rollout action ids from phys_action[:, 5:]")
+                    max_roll = min(8, phys_action[:, 5:].shape[1])
+                    for i in range(max_roll):
+                        a_idx = int(torch.argmax(phys_action[0, 5 + i]).item())
+                        print(f"roll_step={i:02d} uses phys_action at t={5+i:02d} -> action_idx={a_idx:02d}")
+
+                    self._wm.dynamics._debug_img_mode = True
+                    self._wm.dynamics._debug_img_counter = 0
+                else:
+                    self._wm.dynamics._debug_img_mode = False
+
                 prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
+                self._wm.dynamics._debug_img_mode = False
+
                 reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
                 reward = reward_prior
 
@@ -118,20 +162,14 @@ class Dreamer(nn.Module):
 
                 _, T_roll, _, _ = prior["stoch"].shape
 
-                # -------- OPE on REAL states (post), from step 5 onward --------
+                if debug_now:
+                    print("\n[OPE ALIGNMENT TABLE]")
                 for t in range(5, phys_action.shape[1] - 1):
                     real_state_t = {k: v[:, t] for k, v in full_states.items()}
                     feat_real = self._wm.dynamics.get_feat(real_state_t)
                     inp_real = feat_real.detach()
 
                     value_real = self._task_behavior.value(inp_real).mode()
-
-                    if len(ope_trajs) < 3 and t < 15:
-                        print(
-                            f"[value debug] stay={stay_id} t={t} "
-                            f"value={float(to_np(value_real.squeeze())):.4f}",
-                            flush=True,
-                        )
 
                     clin_action_onehot = phys_action[:, t + 1]
 
@@ -142,25 +180,23 @@ class Dreamer(nn.Module):
                     logp_b = tools.behavior_log_prob(self._behavior_policy, inp_real, clin_action_onehot)
                     pi_b = torch.exp(logp_b)
 
-                    if len(ope_trajs) < 3 and t < 15:
-                        clin_idx = torch.argmax(clin_action_onehot, dim=-1).item()
-                        ai_top = torch.argmax(ai_dist_real.probs, dim=-1).item()
-                        b_dist_real = self._behavior_policy(inp_real)
-                        b_top = torch.argmax(b_dist_real.probs, dim=-1).item()
-
+                    if debug_now and t < 12:
+                        a_curr = int(torch.argmax(phys_action[0, t]).item())
+                        a_next = int(torch.argmax(phys_action[0, t + 1]).item())
+                        r_next = float(data["reward"][0, t + 1].item())
                         print(
-                            f"[eval OPE debug] stay={stay_id} t={t} "
-                            f"clin={clin_idx} ai_top={ai_top} b_top={b_top} "
-                            f"pi_ai={float(to_np(pi_ai.squeeze())):.6e} "
-                            f"pi_b={float(to_np(pi_b.squeeze())):.6e}",
-                            flush=True,
+                            f"t={t:02d} "
+                            f"state=s_t, stored_action_t={a_curr:02d}, "
+                            f"target_clin_action=a_(t+1)={a_next:02d}, "
+                            f"reward_(t+1)={r_next:8.4f}, "
+                            f"pi_ai={float(to_np(pi_ai.squeeze())):.6e}, "
+                            f"pi_b={float(to_np(pi_b.squeeze())):.6e}"
                         )
 
                     pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
                     pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
                     reward_list.append(float(to_np(data["reward"][:, t + 1].squeeze())))
 
-                # -------- model-based rollout for policy behavior / return --------
                 for t in range(T_roll):
                     init_t = {k: v[:, t] for k, v in prior.items()}
                     feat = self._wm.dynamics.get_feat(init_t)
@@ -201,6 +237,9 @@ class Dreamer(nn.Module):
                 if data["mortality"].any() == 1:
                     true_mortality += 1
 
+                if debug_now:
+                    first_debug_done = True
+
         if valid_episodes == 0:
             print("No valid episodes for evaluation.", flush=True)
             return
@@ -236,7 +275,6 @@ class Dreamer(nn.Module):
         metrics["ai_mortality"] = round(ai_mortality * 100, 2)
         metrics["true_mortality"] = round(true_mortality * 100, 2)
 
-        # OPE metrics
         metrics["wis"] = ope_metrics["wis"]
         metrics["wpdis"] = ope_metrics["wpdis"]
         metrics["cwpdis"] = ope_metrics["cwpdis"]
@@ -269,6 +307,8 @@ class Dreamer(nn.Module):
         ai_episode_returns = []
         mortalities = []
         features_dict = {"ori_feat": [], "recon_feat": []}
+
+        first_debug_done = False
         
         for stay_id, data in tqdm(episodes.items()):
             data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
@@ -276,34 +316,86 @@ class Dreamer(nn.Module):
             data = self._wm.preprocess(data)
             flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
             unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
+
             features = flatten(data["features"])
             if self._config.fm["use_fm"]:
                 delta = flatten(data["delta"]) 
             else:
                 delta = None
+
             embed = self._wm.encoder(features, delta)
             embed = unflatten(embed)
+
             phys_action = data["action"].detach().clone()
             is_first = data["is_first"].detach().clone()
-            states, _ = self._wm.dynamics.observe(
-                    embed[:, :5], phys_action[:, :5], is_first[:, :5]
-                )
 
-            # evaluate the world model
+            debug_now = not first_debug_done
+            if debug_now:
+                print(f"\n{'='*80}")
+                print(f"[EVAL_WM DEBUG] FIRST STAY = {stay_id}")
+                print(f"{'='*80}")
+
+                max_t = min(12, phys_action.shape[1])
+                print("\n[FIRST STAY ALIGNMENT TABLE]")
+                for t in range(max_t):
+                    a_idx = int(torch.argmax(phys_action[0, t]).item())
+                    r_val = float(data["reward"][0, t].item())
+                    mort = float(data["mortality"][0, t].item())
+                    print(
+                        f"t={t:02d} "
+                        f"action_idx={a_idx:02d} "
+                        f"reward={r_val:8.4f} "
+                        f"mortality={mort:.0f}"
+                    , flush=True)
+
+            if debug_now:
+                self._wm.dynamics._debug_mode = True
+                self._wm.dynamics._debug_obs_counter = 0
+            else:
+                self._wm.dynamics._debug_mode = False
+
+            states, _ = self._wm.dynamics.observe(
+                embed[:, :5], phys_action[:, :5], is_first[:, :5], debug=debug_now
+            )
+            self._wm.dynamics._debug_mode = False
+
             init = {k: v[:, -1] for k, v in states.items()}
 
             if phys_action.shape[1] <= 5:
                 print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
                 continue
 
+            if debug_now:
+                print("\n[ROLLOUT START FROM t=4]")
+                max_roll = min(8, phys_action[:, 5:].shape[1])
+                for i in range(max_roll):
+                    a_idx = int(torch.argmax(phys_action[0, 5 + i]).item())
+                    print(f"roll_step={i:02d} uses phys_action at t={5+i:02d} -> action_idx={a_idx:02d}", flush=True)
+
+                self._wm.dynamics._debug_img_mode = True
+                self._wm.dynamics._debug_img_counter = 0
+            else:
+                self._wm.dynamics._debug_img_mode = False
+
             prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
+            self._wm.dynamics._debug_img_mode = False
+
             reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
-            def cont_penalty(cont_pred, a = 0.01, b = 0.01, c = 0.001):
-                # Penalty: died=-a, discharged=+b, ICU=-c
-                weights = torch.tensor([-a, b, -c], device=cont_pred.device)
-                return weights[cont_pred.argmax(-1)]
             reward = reward_prior
-            # reward = reward_prior + cont_penalty(self._wm.heads["cont"](self._wm.dynamics.get_feat(prior)).mode()).unsqueeze(-1)
+            if debug_now:
+                print("\n[REWARD HEAD ALIGNMENT]")
+                max_r = min(10, reward_prior.shape[1])
+                for k in range(max_r):
+                    real_t = 5 + k
+                    pred_r = float(reward_prior[0, k].item())
+                    real_r = float(data["reward"][0, real_t].item())
+                    act_idx = int(torch.argmax(phys_action[0, real_t]).item())
+                    print(
+                        f"roll_step={k:02d} "
+                        f"uses action at t={real_t:02d} act={act_idx:02d} "
+                        f"pred_reward={pred_r:8.4f} "
+                        f"real_reward={real_r:8.4f}"
+                    )
             phys_episode_return = to_np(reward.sum(dim=1).squeeze())
             phys_episode_returns.append(phys_episode_return)
             mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
@@ -313,6 +405,9 @@ class Dreamer(nn.Module):
             recon_feature = torch.cat([recon[:, :5], openl], 1)
             features_dict["ori_feat"].append(to_np(data["features"]))
             features_dict["recon_feat"].append(to_np(recon_feature))
+
+            if debug_now:
+                first_debug_done = True
 
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
@@ -349,27 +444,24 @@ class Dreamer(nn.Module):
         self._task_behavior.eval()
         self._behavior_policy.eval()
 
+        first_debug_done = False
+
         with torch.no_grad():
             for stay_id, data in tqdm(episodes.items()):
                 data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
                 B, T, _ = data["features"].shape
-                data = self._wm.preprocess(data)
-                flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-                unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
 
-                features = flatten(data["features"])
-                if self._config.fm["use_fm"]:
-                    delta = flatten(data["delta"])
-                else:
-                    delta = None
-
-                embed = self._wm.encoder(features, delta)
-                embed = unflatten(embed)
+                debug_now = not first_debug_done
+                post, embed, data = self._wm._load(
+                    data,
+                    debug=debug_now,
+                    debug_name=f"_eval stay={stay_id}"
+                )
 
                 phys_action = data["action"].detach().clone()
                 is_first = data["is_first"].detach().clone()
 
-                full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first)
+                full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first, debug=False)
 
                 states = {k: v[:, :5] for k, v in full_states.items()}
                 feat_post = self._wm.dynamics.get_feat(states)
@@ -385,7 +477,15 @@ class Dreamer(nn.Module):
 
                 valid_episodes += 1
 
+                if debug_now:
+                    self._wm.dynamics._debug_img_mode = True
+                    self._wm.dynamics._debug_img_counter = 0
+                else:
+                    self._wm.dynamics._debug_img_mode = False
+
                 prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
+                self._wm.dynamics._debug_img_mode = False
+
                 feat_prior = self._wm.dynamics.get_feat(prior)
 
                 openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
@@ -438,20 +538,13 @@ class Dreamer(nn.Module):
 
                     _, T_roll, _, _ = prior["stoch"].shape
 
-                    # OPE on real posterior states, from step 5 onward.
+                    if debug_now:
+                        print("\n[_EVAL OPE ALIGNMENT TABLE]")
+
                     for t in range(5, phys_action.shape[1] - 1):
                         real_state_t = {k: v[:, t] for k, v in full_states.items()}
                         feat_real = self._wm.dynamics.get_feat(real_state_t)
                         inp_real = feat_real.detach()
-
-                        value_real = self._task_behavior.value(inp_real).mode()
-
-                        if len(ope_trajs) < 3 and t < 15:
-                            print(
-                                f"[value debug] stay={stay_id} t={t} "
-                                f"value={float(to_np(value_real.squeeze())):.4f}",
-                                flush=True,
-                            )
 
                         clin_action_onehot = phys_action[:, t + 1]
 
@@ -464,25 +557,22 @@ class Dreamer(nn.Module):
                         )
                         pi_b = torch.exp(logp_b)
 
-                        if len(ope_trajs) < 3 and t < 15:
-                            clin_idx = torch.argmax(clin_action_onehot, dim=-1).item()
-                            ai_top = torch.argmax(ai_dist_real.probs, dim=-1).item()
-                            b_dist_real = self._behavior_policy(inp_real)
-                            b_top = torch.argmax(b_dist_real.probs, dim=-1).item()
-
+                        if debug_now and t < 12:
+                            a_curr = int(torch.argmax(phys_action[0, t]).item())
+                            a_next = int(torch.argmax(phys_action[0, t + 1]).item())
+                            r_next = float(data["reward"][0, t + 1].item())
                             print(
-                                f"[_eval OPE debug] stay={stay_id} t={t} "
-                                f"clin={clin_idx} ai_top={ai_top} b_top={b_top} "
+                                f"t={t:02d} stored_action_t={a_curr:02d} "
+                                f"target_action_next={a_next:02d} "
+                                f"reward_next={r_next:8.4f} "
                                 f"pi_ai={float(to_np(pi_ai.squeeze())):.6e} "
-                                f"pi_b={float(to_np(pi_b.squeeze())):.6e}",
-                                flush=True,
+                                f"pi_b={float(to_np(pi_b.squeeze())):.6e}"
                             )
 
                         pi_ai_clin_list.append(float(to_np(pi_ai.squeeze())))
                         pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
                         reward_list.append(float(to_np(data["reward"][:, t + 1].squeeze())))
 
-                    # Model-based rollout for AI action analysis.
                     for t in range(T_roll):
                         init_t = {k: v[:, t] for k, v in prior.items()}
                         feat = self._wm.dynamics.get_feat(init_t)
@@ -518,6 +608,9 @@ class Dreamer(nn.Module):
                     mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
                     if data["mortality"].any() == 1:
                         true_mortality += 1
+
+                if debug_now:
+                    first_debug_done = True
 
         if valid_episodes == 0:
             print("No valid episodes for evaluation.", flush=True)

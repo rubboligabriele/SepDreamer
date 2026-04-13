@@ -125,11 +125,26 @@ class RSSM(nn.Module):
         else:
             raise NotImplementedError(self._initial)
 
-    def observe(self, embed, action, is_first, state=None):
+    def observe(self, embed, action, is_first, state=None, debug=False):
         swap = lambda x: x.permute([1, 0] + list(range(2, len(x.shape))))
-        # (batch, time, ch) -> (time, batch, ch)
         embed, action, is_first = swap(embed), swap(action), swap(is_first)
-        # prev_state[0] means selecting posterior of return(posterior, prior) from obs_step
+
+        if debug:
+            print("\n[RSSM OBSERVE DEBUG]")
+            print("embed time-major shape:", tuple(embed.shape))
+            print("action time-major shape:", tuple(action.shape))
+            print("is_first time-major shape:", tuple(is_first.shape))
+
+            max_t = min(8, embed.shape[0])
+            for t in range(max_t):
+                a_idx = int(torch.argmax(action[t, 0]).item())
+                print(
+                    f"t={t:02d} "
+                    f"embed_norm={float(embed[t, 0].norm().item()):.4f} "
+                    f"action_idx={a_idx:02d} "
+                    f"is_first={float(is_first[t, 0].item()):.0f}"
+                )
+
         post, prior = tools.static_scan(
             lambda prev_state, prev_act, embed, is_first: self.obs_step(
                 prev_state[0], prev_act, embed, is_first
@@ -138,9 +153,24 @@ class RSSM(nn.Module):
             (state, state),
         )
 
-        # (time, batch, stoch, discrete_num) -> (batch, time, stoch, discrete_num)
         post = {k: swap(v) for k, v in post.items()}
         prior = {k: swap(v) for k, v in prior.items()}
+
+        if debug:
+            print("\n[RSSM OBSERVE DEBUG - OUTPUT]")
+            for k, v in post.items():
+                print("post", k, tuple(v.shape))
+            for k, v in prior.items():
+                print("prior", k, tuple(v.shape))
+
+            max_t = min(5, post["deter"].shape[1])
+            for t in range(max_t):
+                print(
+                    f"post t={t:02d} "
+                    f"deter_norm={float(post['deter'][0, t].norm().item()):.4f} "
+                    f"stoch_norm={float(post['stoch'][0, t].float().norm().item()):.4f}"
+                )
+
         return post, prior
 
     def imagine_with_action(self, action, state):
@@ -173,14 +203,12 @@ class RSSM(nn.Module):
         return dist
 
     def obs_step(self, prev_state, prev_action, embed, is_first, sample=True):
-        # initialize all prev_state
         if prev_state == None or torch.sum(is_first) == len(is_first):
             prev_state = self.initial(len(is_first))
             prev_action = torch.zeros(
                 (len(is_first), self._num_actions),
                 device=embed.device
             )
-        # overwrite the prev_state only where is_first=True
         elif torch.sum(is_first) > 0:
             is_first = is_first[:, None]
             prev_action *= 1.0 - is_first
@@ -194,44 +222,79 @@ class RSSM(nn.Module):
                     val * (1.0 - is_first_r) + init_state[key] * is_first_r
                 )
 
+        if hasattr(self, "_debug_mode") and self._debug_mode and self._debug_obs_counter < 8:
+            a_idx = int(torch.argmax(prev_action[0]).item())
+            print(
+                f"[obs_step {self._debug_obs_counter}] "
+                f"is_first={float(is_first[0].item()) if is_first.ndim == 1 else float(is_first[0,0].item())} "
+                f"prev_action_idx={a_idx:02d} "
+                f"embed_norm={float(embed[0].norm().item()):.4f}"
+            )
+
         prior = self.img_step(prev_state, prev_action)
         x = torch.cat([prior["deter"], embed], -1)
-        # (batch_size, prior_deter + embed) -> (batch_size, hidden)
         x = self._obs_out_layers(x)
-        # (batch_size, hidden) -> (batch_size, stoch, discrete_num)
         stats = self._suff_stats_layer("obs", x)
+
         if sample:
             stoch = self.get_dist(stats).sample()
         else:
             stoch = self.get_dist(stats).mode()
+
         post = {"stoch": stoch, "deter": prior["deter"], **stats}
+
+        if hasattr(self, "_debug_mode") and self._debug_mode and self._debug_obs_counter < 8:
+            print(
+                f"[obs_step {self._debug_obs_counter}] "
+                f"prior_deter_norm={float(prior['deter'][0].norm().item()):.4f} "
+                f"post_deter_norm={float(post['deter'][0].norm().item()):.4f} "
+                f"post_stoch_norm={float(post['stoch'][0].float().norm().item()):.4f}"
+            )
+            self._debug_obs_counter += 1
+
         return post, prior
 
     def img_step(self, prev_state, prev_action, sample=True):
-        # (batch, stoch, discrete_num)
+        if hasattr(self, "_debug_img_mode") and self._debug_img_mode and self._debug_img_counter < 8:
+            a_idx = int(torch.argmax(prev_action[0]).item())
+            print(
+                f"[img_step {self._debug_img_counter}] "
+                f"prev_action_idx={a_idx:02d} "
+                f"prev_deter_norm={float(prev_state['deter'][0].norm().item()):.4f} "
+                f"prev_stoch_norm={float(prev_state['stoch'][0].float().norm().item()):.4f}"
+            )
+
         prev_stoch = prev_state["stoch"]
         if self._discrete:
             shape = list(prev_stoch.shape[:-2]) + [self._stoch * self._discrete]
-            # (batch, stoch, discrete_num) -> (batch, stoch * discrete_num)
             prev_stoch = prev_stoch.reshape(shape)
-        # (batch, stoch * discrete_num) -> (batch, stoch * discrete_num + action)
+
         x = torch.cat([prev_stoch, prev_action], -1)
-        # (batch, stoch * discrete_num + action, embed) -> (batch, hidden)
         x = self._img_in_layers(x)
-        for _ in range(self._rec_depth):  # rec depth is not correctly implemented
+
+        for _ in range(self._rec_depth):
             deter = prev_state["deter"]
-            # (batch, hidden), (batch, deter) -> (batch, deter), (batch, deter)
             x, deter = self._cell(x, [deter])
-            deter = deter[0]  # Keras wraps the state in a list.
-        # (batch, deter) -> (batch, hidden)
+            deter = deter[0]
+
         x = self._img_out_layers(x)
-        # (batch, hidden) -> (batch_size, stoch, discrete_num)
         stats = self._suff_stats_layer("ims", x)
+
         if sample:
             stoch = self.get_dist(stats).sample()
         else:
             stoch = self.get_dist(stats).mode()
+
         prior = {"stoch": stoch, "deter": deter, **stats}
+
+        if hasattr(self, "_debug_img_mode") and self._debug_img_mode and self._debug_img_counter < 8:
+            print(
+                f"[img_step {self._debug_img_counter}] "
+                f"new_deter_norm={float(prior['deter'][0].norm().item()):.4f} "
+                f"new_stoch_norm={float(prior['stoch'][0].float().norm().item()):.4f}"
+            )
+            self._debug_img_counter += 1
+
         return prior
 
     def get_stoch(self, deter):
