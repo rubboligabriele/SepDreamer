@@ -133,6 +133,16 @@ def main(config):
                 agent.train_policy(config.epochs, use_history=True)
             else:
                 tools.load_model(agent, "all", config.ckptdir, config.ckptepoch, config.device)
+
+                if hasattr(config, "behavior_ckptdir") and config.behavior_ckptdir:
+                    tools.load_model(
+                        agent,
+                        "behavior_policy",
+                        config.behavior_ckptdir,
+                        config.behavior_ckptepoch,
+                        config.device,
+                    )
+
                 agent.eval(eval_eps, config.ckptepoch)
 
         elif config.mode == "policy_p2":
