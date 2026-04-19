@@ -140,9 +140,8 @@ def main(config):
                 tools.load_model(agent, "all", config.ckptdir, config.ckptepoch, config.device, config.actor["lr"], config.critic["lr"])
                 agent.train_policy(config.epochs, use_history=False)
             else:
-                for epoch in range(config.save_every, config.epochs + 1, config.save_every):
-                    tools.load_model(agent, "all", config.ckptdir, config.ckptepoch, config.device)
-                    agent.eval(eval_eps, epoch)
+                tools.load_model(agent, "all", config.ckptdir, config.ckptepoch, config.device)
+                agent.eval(eval_eps, config.ckptepoch)
             
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
