@@ -31,6 +31,15 @@ class Dreamer(nn.Module):
         self._wm = models.WorldModel(config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
         self._behavior_policy = models.BehaviorPolicy(config)
+
+    def _get_policy_value_estimate(self, feat):
+        """
+        feat: [B, D]
+        returns: [B]
+        """
+        value_dist = self._task_behavior.value(feat)
+        value = value_dist.mode()
+        return value.squeeze(-1)
     
     def train(self, epochs):  # similar to the original train function in trainer
         for epoch in trange(0, epochs + 1, desc="Training"):
@@ -46,6 +55,7 @@ class Dreamer(nn.Module):
         true_mortality = 0
         phys_episode_returns = []
         ai_episode_returns = []
+        value_estimates = []
         ai_actions = []
         phys_actions = []
         sofas = []
@@ -113,10 +123,22 @@ class Dreamer(nn.Module):
                     self._wm.dynamics._debug_mode = False
 
                 full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first, debug=debug_now)
+                feat_seq = self._wm.dynamics.get_feat(full_states)[:, :-1]   # s_t
+                act_seq = phys_action[:, 1:]                                 # a_{t+1}
+
+                is_first_seq = data["is_first"][:, :-1]
+                dist_b_seq = self._behavior_policy(feat_seq, is_first_seq)
+                logp_b_seq = dist_b_seq.log_prob(act_seq)                    # [B, T-1]
+                pi_b_seq = torch.exp(logp_b_seq)
+
                 self._wm.dynamics._debug_mode = False
 
                 states = {k: v[:, :5] for k, v in full_states.items()}
                 init = {k: v[:, 4] for k, v in full_states.items()}
+
+                feat_init = self._wm.dynamics.get_feat(init)
+                value_pred = self._get_policy_value_estimate(feat_init.detach())
+                value_estimates.append(float(to_np(value_pred.squeeze())))
 
                 if debug_now:
                     print("\n[ROLLOUT START]")
@@ -160,7 +182,7 @@ class Dreamer(nn.Module):
                 pi_b_clin_list = []
                 reward_list = []
 
-                _, T_roll, _, _ = prior["stoch"].shape
+                T_roll = prior["stoch"].shape[1]
 
                 if debug_now:
                     print("\n[OPE ALIGNMENT TABLE]")
@@ -169,16 +191,13 @@ class Dreamer(nn.Module):
                     feat_real = self._wm.dynamics.get_feat(real_state_t)
                     inp_real = feat_real.detach()
 
-                    value_real = self._task_behavior.value(inp_real).mode()
-
                     clin_action_onehot = phys_action[:, t + 1]
 
                     ai_dist_real = self._task_behavior.actor(inp_real)
                     logp_ai = ai_dist_real.log_prob(clin_action_onehot)
                     pi_ai = torch.exp(logp_ai)
 
-                    logp_b = tools.behavior_log_prob(self._behavior_policy, inp_real, clin_action_onehot)
-                    pi_b = torch.exp(logp_b)
+                    pi_b = pi_b_seq[:, t]
 
                     if debug_now and t < 12:
                         a_curr = int(torch.argmax(phys_action[0, t]).item())
@@ -197,20 +216,22 @@ class Dreamer(nn.Module):
                     pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
                     reward_list.append(float(to_np(data["reward"][:, t + 1].squeeze())))
 
-                for t in range(T_roll):
-                    init_t = {k: v[:, t] for k, v in prior.items()}
-                    feat = self._wm.dynamics.get_feat(init_t)
-                    inp = feat.detach()
+                state_ai = {k: v[:, 4] for k, v in full_states.items()}
+                ai_episode_return = 0.0
+                actions = []
 
-                    ai_dist = self._task_behavior.actor(inp)
+                for t in range(T_roll):
+                    feat_ai = self._wm.dynamics.get_feat(state_ai)
+                    ai_dist = self._task_behavior.actor(feat_ai.detach())
                     action = ai_dist.sample()
                     actions.append(to_np(action))
 
-                    succ = self._wm.dynamics.img_step(init_t, action)
-                    ai_value = self._wm.heads["reward"](
-                        self._wm.dynamics.get_feat(succ).detach()
+                    state_ai = self._wm.dynamics.img_step(state_ai, action)
+                    reward_ai = self._wm.heads["reward"](
+                        self._wm.dynamics.get_feat(state_ai).detach()
                     ).mode()
-                    ai_episode_return += to_np(ai_value.squeeze())
+
+                    ai_episode_return += float(to_np(reward_ai.squeeze()))
 
                 actions = np.stack(actions, axis=1)
                 ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
@@ -249,6 +270,7 @@ class Dreamer(nn.Module):
 
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
+        value_estimates = np.array(value_estimates, dtype=np.float32)
         ai_actions = np.concatenate(ai_actions, axis=0)
         phys_actions = np.concatenate(phys_actions, axis=0)
 
@@ -265,7 +287,12 @@ class Dreamer(nn.Module):
         )
         fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
 
-        ai_mortality, ai_std = tools.calculate_esmitated_mortality(
+        fig_value, value_bin_centers, value_smoothed, value_smoothed_sem = tools.plot_mortality_vs_value(
+            value_estimates, mortalities, xlabel="Critic Value"
+        )
+        fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
+
+        ai_mortality, ai_std = tools.calculate_estimated_mortality(
             ai_episode_returns, bin_centers, smoothed, smoothed_sem
         )
         true_mortality = true_mortality / valid_episodes
@@ -282,6 +309,8 @@ class Dreamer(nn.Module):
 
         metrics["imag_episode_return"] = to_np(imag_rewards) / valid_episodes
         metrics["ai_episode_return"] = float(ai_episode_returns.mean())
+        metrics["critic_value_mean"] = float(value_estimates.mean())
+        metrics["critic_value_std"] = float(value_estimates.std())
 
         data_out = {
             "mortality": full_mort,
@@ -297,6 +326,7 @@ class Dreamer(nn.Module):
             os.path.join(self._logdir, f"phys_and_mortality_{epoch}.npz"),
             phys=phys_episode_returns,
             mort=mortalities,
+            value=value_estimates,
         )
 
         with (self._logdir / "metrics.jsonl").open("a") as f:
@@ -436,6 +466,7 @@ class Dreamer(nn.Module):
 
         phys_episode_returns = []
         ai_episode_returns = []
+        value_estimates = []
         ai_actions = []
         mortalities = []
         ope_trajs = []
@@ -462,6 +493,13 @@ class Dreamer(nn.Module):
                 is_first = data["is_first"].detach().clone()
 
                 full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first, debug=False)
+                feat_seq = self._wm.dynamics.get_feat(full_states)[:, :-1]   # s_t
+                act_seq = phys_action[:, 1:]                                 # a_{t+1}
+
+                is_first_seq = data["is_first"][:, :-1]
+                dist_b_seq = self._behavior_policy(feat_seq, is_first_seq)
+                logp_b_seq = dist_b_seq.log_prob(act_seq)                    # [B, T-1]
+                pi_b_seq = torch.exp(logp_b_seq)
 
                 states = {k: v[:, :5] for k, v in full_states.items()}
                 feat_post = self._wm.dynamics.get_feat(states)
@@ -470,6 +508,10 @@ class Dreamer(nn.Module):
                 reward_head_post = self._wm.heads["reward"](feat_post)
                 cont_post = self._wm.heads["cont"](feat_post).mode()
                 init = {k: v[:, 4] for k, v in full_states.items()}
+
+                feat_init = self._wm.dynamics.get_feat(init)
+                value_pred = self._get_policy_value_estimate(feat_init.detach())
+                value_estimates.append(float(to_np(value_pred.squeeze())))
 
                 if phys_action.shape[1] <= 5:
                     print(f"Skipping short episode {stay_id} with length {phys_action.shape[1]}", flush=True)
@@ -536,7 +578,7 @@ class Dreamer(nn.Module):
                     pi_b_clin_list = []
                     reward_list = []
 
-                    _, T_roll, _, _ = prior["stoch"].shape
+                    T_roll = prior["stoch"].shape[1]
 
                     if debug_now:
                         print("\n[_EVAL OPE ALIGNMENT TABLE]")
@@ -552,10 +594,7 @@ class Dreamer(nn.Module):
                         logp_ai = ai_dist_real.log_prob(clin_action_onehot)
                         pi_ai = torch.exp(logp_ai)
 
-                        logp_b = tools.behavior_log_prob(
-                            self._behavior_policy, inp_real, clin_action_onehot
-                        )
-                        pi_b = torch.exp(logp_b)
+                        pi_b = pi_b_seq[:, t]
 
                         if debug_now and t < 12:
                             a_curr = int(torch.argmax(phys_action[0, t]).item())
@@ -573,20 +612,22 @@ class Dreamer(nn.Module):
                         pi_b_clin_list.append(float(to_np(pi_b.squeeze())))
                         reward_list.append(float(to_np(data["reward"][:, t + 1].squeeze())))
 
-                    for t in range(T_roll):
-                        init_t = {k: v[:, t] for k, v in prior.items()}
-                        feat = self._wm.dynamics.get_feat(init_t)
-                        inp = feat.detach()
+                    state_ai = {k: v[:, 4] for k, v in full_states.items()}
+                    ai_episode_return = 0.0
+                    actions = []
 
-                        ai_dist = self._task_behavior.actor(inp)
+                    for t in range(T_roll):
+                        feat_ai = self._wm.dynamics.get_feat(state_ai)
+                        ai_dist = self._task_behavior.actor(feat_ai.detach())
                         action = ai_dist.sample()
                         actions.append(to_np(action))
 
-                        succ = self._wm.dynamics.img_step(init_t, action)
-                        ai_value = self._wm.heads["reward"](
-                            self._wm.dynamics.get_feat(succ).detach()
+                        state_ai = self._wm.dynamics.img_step(state_ai, action)
+                        reward_ai = self._wm.heads["reward"](
+                            self._wm.dynamics.get_feat(state_ai).detach()
                         ).mode()
-                        ai_episode_return += float(to_np(ai_value.squeeze()))
+
+                        ai_episode_return += float(to_np(reward_ai.squeeze()))
 
                     actions = np.stack(actions, axis=1)
                     ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
@@ -628,6 +669,7 @@ class Dreamer(nn.Module):
 
             phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
             ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
+            value_estimates = np.array(value_estimates, dtype=np.float32)
             mortalities = np.array(mortalities, dtype=np.float32)
             ai_actions = np.concatenate(ai_actions, axis=0)
 
@@ -636,7 +678,12 @@ class Dreamer(nn.Module):
             )
             images["mortality_vs_expected_return"] = fig
 
-            ai_mortality, ai_std = tools.calculate_esmitated_mortality(
+            fig_value, value_bin_centers, value_smoothed, value_smoothed_sem = tools.plot_mortality_vs_value(
+                value_estimates, mortalities, xlabel="Critic Value"
+            )
+            images["mortality_vs_value"] = fig_value
+
+            ai_mortality, ai_std = tools.calculate_estimated_mortality(
                 ai_episode_returns, bin_centers, smoothed, smoothed_sem
             )
             true_mortality = true_mortality / valid_episodes
@@ -647,6 +694,8 @@ class Dreamer(nn.Module):
             metrics["mortality_decrease"] = round(mortality_decrease * 100, 2)
             metrics["imag_episode_return"] = imag_rewards / valid_episodes
             metrics["ai_episode_return"] = float(ai_episode_returns.mean())
+            metrics["critic_value_mean"] = float(value_estimates.mean())
+            metrics["critic_value_std"] = float(value_estimates.std())
 
             metrics["wis"] = ope_metrics["wis"]
             metrics["wpdis"] = ope_metrics["wpdis"]
@@ -690,8 +739,9 @@ class Dreamer(nn.Module):
 
                 feat_in = feat[:, :-1]
                 action_tgt = data["action"][:, 1:]
+                is_first_in = data["is_first"][:, :-1]
 
-                dist = self._behavior_policy(feat_in)
+                dist = self._behavior_policy(feat_in, is_first_in)
 
                 loss = -dist.log_prob(action_tgt)
                 total_loss += loss.sum().item()
@@ -812,7 +862,7 @@ class Dreamer(nn.Module):
             post, embed, data = self._wm._load(data)
             feat = self._wm.dynamics.get_feat(post)
 
-        mets = self._behavior_policy.train_batch(feat, data["action"])
+        mets = self._behavior_policy.train_batch(feat, data["action"], data["is_first"])
         metrics.update(mets)
 
         for name, value in metrics.items():

@@ -981,68 +981,63 @@ def plot_mortality_vs_expected_return(reward_values, mortality, num_bins=20):
 
     return fig, bin_centers, smoothed, smoothed_std
 
-def plot_mortality_vs_episode_return(
-    episode_returns: np.ndarray,
-    mortalities: np.ndarray,
-    num_bins: int = 6,
-):
-    """
-    Args:
-        episode_returns: shape [N], float, per-trajectory return
-        mortalities: shape [N], binary mortality (1 = died, 0 = survived)
-        num_bins: how many bins to split returns into
-        smooth: whether to apply LOWESS smoothing (optional)
 
-    Returns:
-        fig, bin_centers, mortality_means, mortality_sems
-    """
-    assert len(episode_returns) == len(mortalities), "Mismatched input lengths"
-    
-    # Bin by return quantiles
-    quantile_bins = np.quantile(episode_returns, np.linspace(0, 1, num_bins + 1))
-    bin_centers = []
-    mortality_means = []
-    mortality_sems = []
+def plot_mortality_vs_value(value_values, mortality, num_bins=20, xlabel="Estimated Value"):
+    # Trim to middle 98% quantile range
+    q01, q99 = np.quantile(value_values, [0.01, 0.99])
+    mask = (value_values >= q01) & (value_values <= q99)
+    value_values = value_values[mask]
+    mortality = mortality[mask.squeeze()]
+
+    # Define bin edges and centers
+    bin_edges = np.linspace(q01, q99, num_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # Assign each value to a bin
+    bin_indices = np.digitize(value_values, bin_edges) - 1
+
+    mortality_means = np.empty(num_bins)
+    mortality_stds = np.empty(num_bins)
+    mortality_means[:] = np.nan
+    mortality_stds[:] = np.nan
 
     for i in range(num_bins):
-        lower = quantile_bins[i]
-        upper = quantile_bins[i + 1]
-        in_bin = (episode_returns >= lower) & (episode_returns < upper) if i < num_bins - 1 else (episode_returns >= lower) & (episode_returns <= upper)
-        if np.sum(in_bin) == 0:
-            continue
-        bin_returns = episode_returns[in_bin]
-        bin_mortality = mortalities[in_bin]
-        bin_centers.append(bin_returns.mean())
-        mortality_means.append(bin_mortality.mean())
-        mortality_sems.append(sem(bin_mortality))
+        in_bin = bin_indices == i
+        if np.sum(in_bin) >= 2:
+            mortality_means[i] = np.mean(mortality[in_bin])
+            mortality_stds[i] = sem(mortality[in_bin])
 
-    bin_centers = np.array(bin_centers)
-    mortality_means = np.array(mortality_means)
-    mortality_sems = np.array(mortality_sems)
+    valid = ~np.isnan(mortality_means)
+    bin_centers = bin_centers[valid]
+    mortality_means = mortality_means[valid]
+    mortality_stds = mortality_stds[valid]
 
-    # Plot
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.errorbar(
+    smoothed = sliding_mean(mortality_means)
+    smoothed_std = sliding_mean(mortality_stds)
+
+    fig, ax = plt.subplots(figsize=(5, 4.5), facecolor='white')
+    ax.plot(bin_centers, smoothed)
+    ax.fill_between(
         bin_centers,
-        mortality_means,
-        yerr=mortality_sems,
-        fmt="-o",
-        capsize=4,
-        label="Mortality rate",
+        smoothed - smoothed_std,
+        smoothed + smoothed_std,
+        color='#ADD8E6'
     )
-    ax.set_xlabel("Episode Return")
-    ax.set_ylabel("Mortality Rate")
-    ax.set_title("Mortality vs. Episode Return")
-    ax.grid(True)
-    ax.legend()
+    ax.set_xlabel(xlabel, fontsize=15)
+    ax.set_ylabel("Mortality", fontsize=15)
+    ax.set_yticks([i / 10 for i in range(11)])
+    ax.tick_params(labelsize=15)
+    ax.grid()
+    fig.tight_layout()
+    plt.show()
 
-    return fig, bin_centers, mortality_means, mortality_sems
+    return fig, bin_centers, smoothed, smoothed_std
 
-def calculate_esmitated_mortality(ai_values, bin_centers, smoothed, smoothed_sem):
+
+def calculate_estimated_mortality(ai_values, bin_centers, smoothed, smoothed_sem):
     q_mean = np.mean(ai_values)
-    idx = np.argmin(np.abs(bin_centers - q_mean))
-    ai_mortality = smoothed[idx]
-    ai_std = smoothed_sem[idx]
+    ai_mortality = np.interp(q_mean, bin_centers, smoothed)
+    ai_std = np.interp(q_mean, bin_centers, smoothed_sem)
     return ai_mortality, ai_std
 
 def compute_accuracy(logits, targets):
@@ -1058,20 +1053,9 @@ def compute_accuracy(logits, targets):
         preds = logits
 
     correct = (preds == targets).sum().item()
-    total = targets.size(1)
+    total = targets.numel()
     
     return round(correct / total * 100, 2)
-
-def behavior_log_prob(behavior_policy, feat, action_onehot):
-    try:
-        dist = behavior_policy(feat.unsqueeze(1))
-        logp = dist.log_prob(action_onehot.unsqueeze(1))
-        if logp.ndim > 1:
-            logp = logp.squeeze(1)
-        return logp
-    except Exception:
-        dist = behavior_policy(feat)
-        return dist.log_prob(action_onehot)
 
 def compute_ope_trajectory(
     pi_ai_list,
@@ -1082,6 +1066,19 @@ def compute_ope_trajectory(
     rho_max=5.0,
     max_ope_steps=30,
 ):
+    """
+    Build one trajectory for OPE.
+
+    Definitions used here:
+      - rho_raw_t   = pi_e(a_t|s_t) / pi_b(a_t|s_t)
+      - rho_t       = clipped rho_raw_t
+      - cum_rho_t   = prod_{i<=t} rho_i
+      - disc_reward_t = gamma^t * r_t
+
+    Notes:
+      - All returned aggregate metrics downstream are computed from CLIPPED weights.
+      - Raw cumulative weights are also stored for debugging.
+    """
     pi_ai = np.asarray(pi_ai_list, dtype=np.float64).reshape(-1)
     pi_b = np.asarray(pi_b_list, dtype=np.float64).reshape(-1)
     rewards = np.asarray(reward_list, dtype=np.float64).reshape(-1)
@@ -1095,30 +1092,44 @@ def compute_ope_trajectory(
     if T == 0:
         return None
 
+    # avoid exact zeros
     pi_ai = np.clip(pi_ai, prob_eps, 1.0)
     pi_b = np.clip(pi_b, prob_eps, 1.0)
 
     rho_raw = pi_ai / pi_b
     rho = np.clip(rho_raw, 0.0, rho_max)
+
+    cum_rho_raw = np.cumprod(rho_raw)
     cum_rho = np.cumprod(rho)
 
     discounts = gamma ** np.arange(T, dtype=np.float64)
     disc_rewards = discounts * rewards
 
-    traj_return = disc_rewards.sum()
-    wis_weight = cum_rho[-1]
-    pdis = np.sum(cum_rho * disc_rewards)
+    traj_return = float(np.sum(disc_rewards))
+
+    # trajectory-wise IS quantities
+    is_weight_raw = float(cum_rho_raw[-1])
+    is_weight = float(cum_rho[-1])
+
+    # per-decision trajectory contribution
+    pdis_raw = float(np.sum(cum_rho_raw * disc_rewards))
+    pdis = float(np.sum(cum_rho * disc_rewards))
 
     return {
-        "rho": rho,
         "rho_raw": rho_raw,
+        "rho": rho,
+        "cum_rho_raw": cum_rho_raw,
         "cum_rho": cum_rho,
         "disc_rewards": disc_rewards,
         "traj_return": traj_return,
-        "wis_weight": wis_weight,
+        "is_weight_raw": is_weight_raw,
+        "is_weight": is_weight,
+        "pdis_raw": pdis_raw,
         "pdis": pdis,
         "debug": {
             "T": int(T),
+            "reward_sum": float(np.sum(rewards)),
+            "disc_reward_sum": float(np.sum(disc_rewards)),
             "pi_ai_min": float(pi_ai.min()),
             "pi_ai_max": float(pi_ai.max()),
             "pi_b_min": float(pi_b.min()),
@@ -1127,20 +1138,37 @@ def compute_ope_trajectory(
             "rho_raw_max": float(rho_raw.max()),
             "rho_min": float(rho.min()),
             "rho_max": float(rho.max()),
+            "cum_rho_raw_last": float(cum_rho_raw[-1]),
             "cum_rho_last": float(cum_rho[-1]),
-            "reward_sum": float(rewards.sum()),
-            "n_pi_b_lt_1e4": int(np.sum(pi_b < 1e-4)),
-            "n_pi_b_lt_1e6": int(np.sum(pi_b < 1e-6)),
-            "n_rho_gt_10": int(np.sum(rho_raw > 10)),
-            "n_rho_gt_100": int(np.sum(rho_raw > 100)),
-        }
+            "n_pi_b_lt_1e-2": int(np.sum(pi_b < 1e-2)),
+            "n_pi_b_lt_1e-3": int(np.sum(pi_b < 1e-3)),
+            "n_pi_b_lt_1e-4": int(np.sum(pi_b < 1e-4)),
+            "n_pi_b_lt_1e-6": int(np.sum(pi_b < 1e-6)),
+            "n_rho_raw_gt_10": int(np.sum(rho_raw > 10.0)),
+            "n_rho_raw_gt_100": int(np.sum(rho_raw > 100.0)),
+            "n_rho_raw_gt_1000": int(np.sum(rho_raw > 1000.0)),
+        },
     }
 
 
 def finalize_ope(ope_trajs, debug=False, top_k=5):
+    """
+    Aggregate OPE metrics across trajectories.
+
+    Returned metrics:
+      - is:     ordinary trajectory-wise IS     (clipped)
+      - wis:    weighted trajectory-wise IS     (clipped)
+      - pdis:   ordinary per-decision IS        (clipped)
+      - wpdis:  weighted PDIS averaged over N   (same scale as ordinary mean contribution)
+      - cwpdis: self-normalized / cumulative weighted PDIS
+      - ess:    ESS from final clipped trajectory weights
+      - ess_min / ess_mean: per-step ESS summary from clipped weights
+    """
     if len(ope_trajs) == 0:
         return {
+            "is": 0.0,
             "wis": 0.0,
+            "pdis": 0.0,
             "wpdis": 0.0,
             "cwpdis": 0.0,
             "ess": 0.0,
@@ -1148,55 +1176,85 @@ def finalize_ope(ope_trajs, debug=False, top_k=5):
             "ess_mean": 0.0,
         }
 
-    num_trajs = len(ope_trajs)
+    n = len(ope_trajs)
 
-    final_weights = np.array([traj["cum_rho"][-1] for traj in ope_trajs], dtype=np.float64)
-    traj_returns = np.array([traj["traj_return"] for traj in ope_trajs], dtype=np.float64)
+    final_weights = np.array(
+        [traj["cum_rho"][-1] for traj in ope_trajs],
+        dtype=np.float64,
+    )
+    final_weights_raw = np.array(
+        [traj["cum_rho_raw"][-1] for traj in ope_trajs],
+        dtype=np.float64,
+    )
+    traj_returns = np.array(
+        [traj["traj_return"] for traj in ope_trajs],
+        dtype=np.float64,
+    )
 
+    # trajectory-wise IS
+    is_est = float(np.mean(final_weights * traj_returns))
     wis = float(np.sum(final_weights * traj_returns) / (np.sum(final_weights) + 1e-8))
 
+    # per-decision aggregation
     max_len = max(len(traj["cum_rho"]) for traj in ope_trajs)
+
+    pdis = 0.0
     wpdis = 0.0
     cwpdis = 0.0
     ess_t_list = []
 
     for t in range(max_len):
-        weighted_rewards_t = []
         weights_t = []
+        weighted_rewards_t = []
 
         for traj in ope_trajs:
             if t < len(traj["cum_rho"]):
                 w_t = traj["cum_rho"][t]
                 r_t = traj["disc_rewards"][t]
-                weighted_rewards_t.append(w_t * r_t)
                 weights_t.append(w_t)
-            else:
-                weighted_rewards_t.append(0.0)
+                weighted_rewards_t.append(w_t * r_t)
 
+        if len(weights_t) == 0:
+            continue
+
+        weights_t = np.asarray(weights_t, dtype=np.float64)
         weighted_rewards_t = np.asarray(weighted_rewards_t, dtype=np.float64)
 
-        # WPDIS
-        wpdis += float(np.sum(weighted_rewards_t) / num_trajs)
+        # ordinary PDIS
+        pdis += float(np.mean(weighted_rewards_t))
 
-        # CWPDIS
-        if len(weights_t) > 0:
-            weights_t = np.asarray(weights_t, dtype=np.float64)
-            cwpdis += float(np.sum(weighted_rewards_t) / (np.sum(weights_t) + 1e-8))
-            ess_t = (np.sum(weights_t) ** 2) / (np.sum(weights_t ** 2) + 1e-8)
-            ess_t_list.append(float(ess_t))
+        # weighted PDIS averaged over total number of trajectories
+        # (missing suffix of shorter trajs contributes 0 implicitly)
+        wpdis += float(np.sum(weighted_rewards_t) / n)
 
+        # self-normalized / cumulative weighted PDIS
+        cwpdis += float(np.sum(weighted_rewards_t) / (np.sum(weights_t) + 1e-8))
+
+        ess_t = (np.sum(weights_t) ** 2) / (np.sum(weights_t ** 2) + 1e-8)
+        ess_t_list.append(float(ess_t))
+
+    # ESS over final clipped trajectory weights
     ess = float((np.sum(final_weights) ** 2) / (np.sum(final_weights ** 2) + 1e-8))
     ess_min = float(np.min(ess_t_list)) if ess_t_list else 0.0
     ess_mean = float(np.mean(ess_t_list)) if ess_t_list else 0.0
 
     if debug:
         order = np.argsort(-np.abs(final_weights))
-        print("\n[OPE DEBUG] worst trajectories by |final weight|")
+        print("\n[OPE DEBUG] worst trajectories by |final clipped weight|")
         for rank, idx in enumerate(order[:top_k]):
-            print(f"rank={rank} idx={idx} debug={ope_trajs[idx]['debug']}")
+            print(
+                f"rank={rank} "
+                f"idx={idx} "
+                f"final_w={final_weights[idx]:.6e} "
+                f"final_w_raw={final_weights_raw[idx]:.6e} "
+                f"return={traj_returns[idx]:.6f} "
+                f"debug={ope_trajs[idx]['debug']}"
+            )
 
     return {
+        "is": is_est,
         "wis": wis,
+        "pdis": pdis,
         "wpdis": wpdis,
         "cwpdis": cwpdis,
         "ess": ess,
@@ -1211,16 +1269,39 @@ def debug_ope_summary(ope_trajs):
 
     pi_b_mins = np.array([traj["debug"]["pi_b_min"] for traj in ope_trajs], dtype=np.float64)
     pi_ai_mins = np.array([traj["debug"]["pi_ai_min"] for traj in ope_trajs], dtype=np.float64)
-    rho_maxs = np.array([traj["debug"]["rho_raw_max"] for traj in ope_trajs], dtype=np.float64)
+    rho_raw_maxs = np.array([traj["debug"]["rho_raw_max"] for traj in ope_trajs], dtype=np.float64)
+
     cum_last = np.array([traj["debug"]["cum_rho_last"] for traj in ope_trajs], dtype=np.float64)
+    cum_last_raw = np.array([traj["debug"]["cum_rho_raw_last"] for traj in ope_trajs], dtype=np.float64)
 
     print("\n[OPE DEBUG SUMMARY]")
     print("num_trajs =", len(ope_trajs))
-    print("pi_b_min global min =", pi_b_mins.min())
-    print("pi_ai_min global min =", pi_ai_mins.min())
-    print("rho_raw_max global max =", rho_maxs.max())
-    print("cum_rho_last min =", cum_last.min())
-    print("cum_rho_last max =", cum_last.max())
+
+    print("pi_b_min global min =", float(pi_b_mins.min()))
+    print("pi_b_min median     =", float(np.median(pi_b_mins)))
+
+    print("pi_ai_min global min =", float(pi_ai_mins.min()))
+    print("pi_ai_min median     =", float(np.median(pi_ai_mins)))
+
+    print("rho_raw_max global max =", float(rho_raw_maxs.max()))
+    print("rho_raw_max median     =", float(np.median(rho_raw_maxs)))
+
+    print("\n[clipped cumulative weights]")
+    print("cum_rho_last min    =", float(cum_last.min()))
+    print("cum_rho_last median =", float(np.median(cum_last)))
+    print("cum_rho_last max    =", float(cum_last.max()))
+    print("num cum_rho_last > 1e1 =", int(np.sum(cum_last > 1e1)))
+    print("num cum_rho_last > 1e2 =", int(np.sum(cum_last > 1e2)))
     print("num cum_rho_last > 1e3 =", int(np.sum(cum_last > 1e3)))
     print("num cum_rho_last < 1e-3 =", int(np.sum(cum_last < 1e-3)))
-    print("median cum_rho_last =", float(np.median(cum_last)))
+    print("num cum_rho_last < 1e-6 =", int(np.sum(cum_last < 1e-6)))
+
+    print("\n[raw cumulative weights]")
+    print("cum_rho_raw_last min    =", float(cum_last_raw.min()))
+    print("cum_rho_raw_last median =", float(np.median(cum_last_raw)))
+    print("cum_rho_raw_last max    =", float(cum_last_raw.max()))
+    print("num cum_rho_raw_last > 1e1 =", int(np.sum(cum_last_raw > 1e1)))
+    print("num cum_rho_raw_last > 1e2 =", int(np.sum(cum_last_raw > 1e2)))
+    print("num cum_rho_raw_last > 1e3 =", int(np.sum(cum_last_raw > 1e3)))
+    print("num cum_rho_raw_last < 1e-3 =", int(np.sum(cum_last_raw < 1e-3)))
+    print("num cum_rho_raw_last < 1e-6 =", int(np.sum(cum_last_raw < 1e-6)))
