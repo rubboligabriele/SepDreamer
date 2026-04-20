@@ -32,5 +32,4 @@ wheels/
 *.out
 
 # analysis files
-/src/preprocessing/analysis/*
-/src/meddreamer/analysis/*
+/analysis*
