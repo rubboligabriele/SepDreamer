@@ -22,6 +22,7 @@ REQUIRED_KEYS = [
 
 OPTIONAL_KEYS = [
     "sofa",
+    "cont",
 ]
 
 
@@ -42,6 +43,87 @@ def check_one_hot(actions: np.ndarray) -> tuple[bool, str]:
         return False, "action matrix is not binary one-hot"
 
     return True, "ok"
+
+
+def derive_expected_cont_from_episode(ep: dict):
+    """
+    Reconstruct the 'cont' target that WorldModel.preprocess() would build
+    starting from episode fields.
+
+    Returns:
+        expected_type: one of {"cont", "mort2", "mort3"}
+        expected_cont: np.ndarray with shape [T], [T,1], or [T,3]
+    """
+    is_terminal = ep["is_terminal"].astype(np.float32)
+    mortality = ep["mortality"].astype(np.float32)
+    T = len(is_terminal)
+
+    # cont_type == "cont"
+    expected_cont = 1.0 - is_terminal
+    return "cont", expected_cont
+
+
+def check_cont(ep: dict) -> list[str]:
+    """
+    Validate cont only if it already exists in the saved episode.
+    Since in your pipeline cont is normally built on-the-fly in preprocess(),
+    this check is optional and consistency-based.
+    """
+    errors = []
+
+    if "cont" not in ep:
+        return errors
+
+    cont = ep["cont"]
+    T = len(ep["timestep"])
+
+    if cont.shape[0] != T:
+        errors.append(f"cont first dimension {cont.shape[0]} != timestep length {T}")
+        return errors
+
+    expected_type, expected_cont = derive_expected_cont_from_episode(ep)
+
+    if cont.ndim == 1:
+        if not np.all((cont == 0.0) | (cont == 1.0)):
+            errors.append("cont (1D) is not binary (contains values different from 0/1)")
+
+        if expected_type == "cont":
+            if not np.array_equal(cont.astype(np.float32), expected_cont.astype(np.float32)):
+                errors.append("cont values are not consistent with (1 - is_terminal)")
+
+    elif cont.ndim == 2 and cont.shape[1] == 1:
+        cont_flat = cont[:, 0]
+        if not np.all((cont_flat == 0.0) | (cont_flat == 1.0)):
+            errors.append("cont ([T,1]) is not binary (contains values different from 0/1)")
+
+        if expected_type == "cont":
+            if not np.array_equal(cont_flat.astype(np.float32), expected_cont.astype(np.float32)):
+                errors.append("cont[:,0] values are not consistent with (1 - is_terminal)")
+
+    elif cont.ndim == 2 and cont.shape[1] == 3:
+        row_sums = cont.sum(axis=1)
+        if not np.allclose(row_sums, 1.0):
+            errors.append("cont ([T,3]) rows do not sum to 1")
+
+        if not np.all((cont == 0.0) | (cont == 1.0)):
+            errors.append("cont ([T,3]) is not one-hot binary")
+
+        last_class = int(np.argmax(cont[-1]))
+        if ep["is_terminal"][-1] == 1 and last_class == 2:
+            errors.append(
+                "cont last row predicts class 2 (continue/ICU) but last is_terminal is 1"
+            )
+        if ep["is_terminal"][-1] == 0 and last_class != 2:
+            errors.append(
+                "cont last row predicts terminal class but last is_terminal is 0"
+            )
+
+    else:
+        errors.append(
+            f"cont has unsupported shape {cont.shape}; expected [T], [T,1], or [T,3]"
+        )
+
+    return errors
 
 
 def check_episode(
@@ -117,8 +199,6 @@ def check_episode(
         if not np.all(np.diff(ep["timestep"]) >= 0):
             errors.append("timesteps are not sorted non-decreasingly")
 
-    # Check NaN / Inf for numeric arrays.
-    # SOFA can legitimately contain NaNs, so it is handled separately.
     for key, value in ep.items():
         if not isinstance(value, np.ndarray):
             continue
@@ -136,13 +216,14 @@ def check_episode(
         if np.isinf(value).any():
             errors.append(f"{key} contains Inf")
 
-    # Optional SOFA checks.
     if "sofa" in ep:
         if len(ep["sofa"]) != T:
             errors.append(f"sofa length {len(ep['sofa'])} != timestep length {T}")
 
         if ep["sofa"].ndim != 1:
             errors.append(f"sofa ndim is {ep['sofa'].ndim}, expected 1")
+
+    errors.extend(check_cont(ep))
 
     return errors
 
@@ -164,6 +245,9 @@ def summarize_episode(ep: dict) -> dict:
         "unique_actions": sorted(np.unique(action_ids).tolist()),
         "mask_observed_fraction": float(ep["mask"].mean()),
         "delta_mean": float(ep["delta"].mean()),
+        "is_terminal_sum": int(np.sum(ep["is_terminal"])),
+        "last_is_terminal": float(ep["is_terminal"][-1]),
+        "last_discount": float(ep["discount"][-1]),
     }
 
     if "sofa" in ep:
@@ -182,6 +266,28 @@ def summarize_episode(ep: dict) -> dict:
             summary["sofa_max"] = None
             summary["sofa_first_valid"] = None
             summary["sofa_last_valid"] = None
+
+    if "cont" in ep:
+        cont = ep["cont"]
+        summary["cont_shape"] = tuple(cont.shape)
+
+        if cont.ndim == 1:
+            summary["cont_last"] = float(cont[-1])
+            summary["cont_zero_frac"] = float((cont == 0).mean())
+            summary["cont_one_frac"] = float((cont == 1).mean())
+
+        elif cont.ndim == 2 and cont.shape[1] == 1:
+            cont_flat = cont[:, 0]
+            summary["cont_last"] = float(cont_flat[-1])
+            summary["cont_zero_frac"] = float((cont_flat == 0).mean())
+            summary["cont_one_frac"] = float((cont_flat == 1).mean())
+
+        elif cont.ndim == 2 and cont.shape[1] == 3:
+            cont_cls = np.argmax(cont, axis=1)
+            summary["cont_last_class"] = int(cont_cls[-1])
+            summary["cont_class_counts"] = {
+                int(c): int((cont_cls == c).sum()) for c in np.unique(cont_cls)
+            }
 
     return summary
 
@@ -297,6 +403,9 @@ def main():
             print("first 10 is_first:", ep["is_first"][:10].tolist())
             print("first 10 is_terminal:", ep["is_terminal"][:10].tolist())
             print("first 10 discount:", ep["discount"][:10].tolist())
+
+            if "cont" in ep:
+                print("first 10 cont:", ep["cont"][:10].tolist())
 
             if "sofa" in ep:
                 print("first 10 sofa:", ep["sofa"][:10].tolist())
