@@ -350,6 +350,7 @@ class Dreamer(nn.Module):
         # -------------------------
         reward_nll_post = 0.0
         reward_nll_prior = 0.0
+
         reward_mae_post_sum = 0.0
         reward_mae_post_count = 0
 
@@ -376,6 +377,7 @@ class Dreamer(nn.Module):
         cont_correct = 0
         cont_total = 0
 
+        # binary case: cont / mort2
         cont_pos_correct = 0
         cont_pos_total = 0
         cont_neg_correct = 0
@@ -384,291 +386,325 @@ class Dreamer(nn.Module):
         cont_prob_on_pos = []
         cont_prob_on_neg = []
 
-        # mort3 specific
-        cont_class_correct = {}
-        cont_class_total = {}
+        # mort3 case
+        cont_class_correct = {0: 0, 1: 0, 2: 0}
+        cont_class_total = {0: 0, 1: 0, 2: 0}
         cont_pred_class_probs = {0: [], 1: [], 2: []}
 
-        for stay_id, data in tqdm(episodes.items()):
-            data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
-            B, T, _ = data["features"].shape
-            data = self._wm.preprocess(data)
+        mort3_terminal_correct = 0
+        mort3_terminal_total = 0
+        mort3_nonterminal_correct = 0
+        mort3_nonterminal_total = 0
+        mort3_death_terminal_correct = 0
+        mort3_death_terminal_total = 0
+        mort3_survival_terminal_correct = 0
+        mort3_survival_terminal_total = 0
 
-            flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-            unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
+        self._wm.eval()
 
-            features = flatten(data["features"])
-            if self._config.fm["use_fm"]:
-                delta = flatten(data["delta"])
-            else:
-                delta = None
+        with torch.no_grad():
+            for stay_id, data in tqdm(episodes.items()):
+                data = {k: np.expand_dims(v, axis=0) for k, v in data.items()}
+                B, T, _ = data["features"].shape
+                data = self._wm.preprocess(data)
 
-            embed = self._wm.encoder(features, delta)
-            embed = unflatten(embed)
+                flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
+                unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
 
-            phys_action = data["action"].detach().clone()
-            is_first = data["is_first"].detach().clone()
+                features = flatten(data["features"])
+                if self._config.fm["use_fm"]:
+                    delta = flatten(data["delta"])
+                else:
+                    delta = None
 
-            debug_now = not first_debug_done
-            if debug_now:
-                print(f"\n{'='*80}")
-                print(f"[EVAL_WM DEBUG] FIRST STAY = {stay_id}")
-                print(f"{'='*80}")
+                embed = self._wm.encoder(features, delta)
+                embed = unflatten(embed)
 
-                max_t = min(12, phys_action.shape[1])
-                print("\n[FIRST STAY ALIGNMENT TABLE]")
-                for t in range(max_t):
-                    a_idx = int(torch.argmax(phys_action[0, t]).item())
-                    r_val = float(data["reward"][0, t].item())
-                    mort = float(data["mortality"][0, t].item())
-                    print(
-                        f"t={t:02d} "
-                        f"action_idx={a_idx:02d} "
-                        f"reward={r_val:8.4f} "
-                        f"mortality={mort:.0f}",
-                        flush=True,
-                    )
+                phys_action = data["action"].detach().clone()
+                is_first = data["is_first"].detach().clone()
 
-            if debug_now:
-                self._wm.dynamics._debug_mode = True
-                self._wm.dynamics._debug_obs_counter = 0
-            else:
-                self._wm.dynamics._debug_mode = False
+                debug_now = not first_debug_done
+                if debug_now:
+                    print(f"\n{'='*80}")
+                    print(f"[EVAL_WM DEBUG] FIRST STAY = {stay_id}")
+                    print(f"{'='*80}")
 
-            states, _ = self._wm.dynamics.observe(
-                embed[:, :5], phys_action[:, :5], is_first[:, :5], debug=debug_now
-            )
-            self._wm.dynamics._debug_mode = False
-
-            init = {k: v[:, -1] for k, v in states.items()}
-
-            if phys_action.shape[1] <= 5:
-                print(
-                    f"Skipping short episode {stay_id} with length {phys_action.shape[1]}",
-                    flush=True,
-                )
-                continue
-
-            valid_episodes += 1
-
-            if debug_now:
-                print("\n[ROLLOUT START FROM t=4]")
-                max_roll = min(8, phys_action[:, 5:].shape[1])
-                for i in range(max_roll):
-                    a_idx = int(torch.argmax(phys_action[0, 5 + i]).item())
-                    print(
-                        f"roll_step={i:02d} uses phys_action at t={5+i:02d} -> action_idx={a_idx:02d}",
-                        flush=True,
-                    )
-
-                self._wm.dynamics._debug_img_mode = True
-                self._wm.dynamics._debug_img_counter = 0
-            else:
-                self._wm.dynamics._debug_img_mode = False
-
-            prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
-            self._wm.dynamics._debug_img_mode = False
-
-            feat_post = self._wm.dynamics.get_feat(states)
-            feat_prior = self._wm.dynamics.get_feat(prior)
-
-            # -------------------------
-            # Heads
-            # -------------------------
-            reward_head_post = self._wm.heads["reward"](feat_post)
-            reward_head_prior = self._wm.heads["reward"](feat_prior)
-
-            reward_post = reward_head_post.mode()
-            reward_prior = reward_head_prior.mode()
-
-            cont_head_post = self._wm.heads["cont"](feat_post)
-            cont_head_prior = self._wm.heads["cont"](feat_prior)
-
-            recon = self._wm.heads["decoder"](feat_post)["features"].mode()
-            openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
-
-            # -------------------------
-            # Reconstruction
-            # -------------------------
-            model = torch.cat([recon[:, :5], openl], 1)
-            error = ((model - data["features"]) ** 2) * data["mask"]
-            recon_error += (
-                error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)
-            ).mean().item()
-
-            # -------------------------
-            # Reward NLL
-            # -------------------------
-            reward_nll_post += (
-                -reward_head_post.log_prob(data["reward"][:, :5])
-            ).mean().item()
-
-            reward_nll_prior += (
-                -reward_head_prior.log_prob(data["reward"][:, 5:])
-            ).mean().item()
-
-            # -------------------------
-            # Reward MAE
-            # -------------------------
-            true_reward_post = data["reward"][:, :5]
-            true_reward_prior = data["reward"][:, 5:]
-
-            mae_post = torch.abs(reward_post - true_reward_post)
-            mae_prior = torch.abs(reward_prior - true_reward_prior)
-
-            reward_mae_post_sum += mae_post.sum().item()
-            reward_mae_post_count += mae_post.numel()
-
-            reward_mae_prior_sum += mae_prior.sum().item()
-            reward_mae_prior_count += mae_prior.numel()
-
-            terminal_mask_prior = data["is_terminal"][:, 5:].bool().unsqueeze(-1)
-            nonterminal_mask_prior = ~terminal_mask_prior
-
-            if terminal_mask_prior.any():
-                term_pred = reward_prior[terminal_mask_prior]
-                term_true = true_reward_prior[terminal_mask_prior]
-
-                reward_mae_terminal_sum += torch.abs(term_pred - term_true).sum().item()
-                reward_mae_terminal_count += term_true.numel()
-
-                sign_ok = (torch.sign(term_pred) == torch.sign(term_true)).sum().item()
-                terminal_sign_correct += sign_ok
-                terminal_sign_total += term_true.numel()
-
-                death_mask = (data["mortality"][:, 5:].bool().unsqueeze(-1) & terminal_mask_prior)
-                surv_mask = ((~data["mortality"][:, 5:].bool()).unsqueeze(-1) & terminal_mask_prior)
-
-                if death_mask.any():
-                    pred_reward_death_terminals.extend(
-                        reward_prior[death_mask].detach().cpu().view(-1).tolist()
-                    )
-                    true_reward_death_terminals.extend(
-                        true_reward_prior[death_mask].detach().cpu().view(-1).tolist()
-                    )
-
-                if surv_mask.any():
-                    pred_reward_survival_terminals.extend(
-                        reward_prior[surv_mask].detach().cpu().view(-1).tolist()
-                    )
-                    true_reward_survival_terminals.extend(
-                        true_reward_prior[surv_mask].detach().cpu().view(-1).tolist()
-                    )
-
-            if nonterminal_mask_prior.any():
-                nonterm_pred = reward_prior[nonterminal_mask_prior]
-                nonterm_true = true_reward_prior[nonterminal_mask_prior]
-                reward_mae_nonterminal_sum += torch.abs(nonterm_pred - nonterm_true).sum().item()
-                reward_mae_nonterminal_count += nonterm_true.numel()
-
-            if debug_now:
-                print("\n[REWARD HEAD ALIGNMENT]")
-                max_r = min(10, reward_prior.shape[1])
-                for k in range(max_r):
-                    real_t = 5 + k
-                    pred_r = float(reward_prior[0, k].item())
-                    real_r = float(data["reward"][0, real_t].item())
-                    act_idx = int(torch.argmax(phys_action[0, real_t]).item())
-                    term_flag = int(data["is_terminal"][0, real_t].item())
-                    print(
-                        f"roll_step={k:02d} "
-                        f"uses action at t={real_t:02d} act={act_idx:02d} "
-                        f"pred_reward={pred_r:8.4f} "
-                        f"real_reward={real_r:8.4f} "
-                        f"is_terminal={term_flag}"
-                    )
-
-            # -------------------------
-            # Cont head analysis
-            # -------------------------
-            if self._config.cont_type in ["cont", "mort2"]:
-                cont_prob_post = cont_head_post.mean
-                cont_prob_prior = cont_head_prior.mean
-
-                cont_prob_all = torch.cat([cont_prob_post[:, :5], cont_prob_prior], dim=1)
-                cont_true_all = data["cont"]
-
-                cont_pred_all = (cont_prob_all >= 0.5).float()
-                cont_true_bin = cont_true_all.float()
-
-                cont_correct += (cont_pred_all == cont_true_bin).sum().item()
-                cont_total += cont_true_bin.numel()
-
-                pos_mask = cont_true_bin == 1
-                neg_mask = cont_true_bin == 0
-
-                if pos_mask.any():
-                    cont_pos_correct += (cont_pred_all[pos_mask] == cont_true_bin[pos_mask]).sum().item()
-                    cont_pos_total += pos_mask.sum().item()
-                    cont_prob_on_pos.extend(cont_prob_all[pos_mask].detach().cpu().view(-1).tolist())
-
-                if neg_mask.any():
-                    cont_neg_correct += (cont_pred_all[neg_mask] == cont_true_bin[neg_mask]).sum().item()
-                    cont_neg_total += neg_mask.sum().item()
-                    cont_prob_on_neg.extend(cont_prob_all[neg_mask].detach().cpu().view(-1).tolist())
-
-            elif self._config.cont_type == "mort3":
-                cont_probs_post = cont_head_post.probs
-                cont_probs_prior = cont_head_prior.probs
-                cont_probs_all = torch.cat([cont_probs_post[:, :5], cont_probs_prior], dim=1)
-
-                cont_true_all = data["cont"]
-                true_cls = torch.argmax(cont_true_all, dim=-1)
-                pred_cls = torch.argmax(cont_probs_all, dim=-1)
-
-                cont_correct += (pred_cls == true_cls).sum().item()
-                cont_total += true_cls.numel()
-
-                for cls in [0, 1, 2]:
-                    cls_mask = true_cls == cls
-                    if cls_mask.any():
-                        if cls not in cont_class_correct:
-                            cont_class_correct[cls] = 0
-                            cont_class_total[cls] = 0
-                        cont_class_correct[cls] += (pred_cls[cls_mask] == true_cls[cls_mask]).sum().item()
-                        cont_class_total[cls] += cls_mask.sum().item()
-                        cont_pred_class_probs[cls].extend(
-                            cont_probs_all[..., cls][cls_mask].detach().cpu().view(-1).tolist()
+                    max_t = min(12, phys_action.shape[1])
+                    print("\n[FIRST STAY ALIGNMENT TABLE]")
+                    for t in range(max_t):
+                        a_idx = int(torch.argmax(phys_action[0, t]).item())
+                        r_val = float(data["reward"][0, t].item())
+                        mort = float(data["mortality"][0, t].item())
+                        term = float(data["is_terminal"][0, t].item())
+                        print(
+                            f"t={t:02d} "
+                            f"action_idx={a_idx:02d} "
+                            f"reward={r_val:8.4f} "
+                            f"mortality={mort:.0f} "
+                            f"is_terminal={term:.0f}",
+                            flush=True,
                         )
 
-            # -------------------------
-            # Returns for mortality plot
-            # -------------------------
-            phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
-            phys_episode_returns.append(phys_episode_return)
-            mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
+                if phys_action.shape[1] <= 5:
+                    print(
+                        f"Skipping short episode {stay_id} with length {phys_action.shape[1]}",
+                        flush=True,
+                    )
+                    continue
 
-            # -------------------------
-            # Recon dumps
-            # -------------------------
-            recon_feature = torch.cat([recon[:, :5], openl], 1)
-            features_dict["ori_feat"].append(to_np(data["features"]))
-            features_dict["recon_feat"].append(to_np(recon_feature))
+                valid_episodes += 1
 
-            if debug_now:
-                first_debug_done = True
+                if debug_now:
+                    self._wm.dynamics._debug_mode = True
+                    self._wm.dynamics._debug_obs_counter = 0
+                else:
+                    self._wm.dynamics._debug_mode = False
+
+                states, _ = self._wm.dynamics.observe(
+                    embed[:, :5], phys_action[:, :5], is_first[:, :5], debug=debug_now
+                )
+                self._wm.dynamics._debug_mode = False
+
+                init = {k: v[:, -1] for k, v in states.items()}
+
+                if debug_now:
+                    print("\n[ROLLOUT START FROM t=4]")
+                    max_roll = min(8, phys_action[:, 5:].shape[1])
+                    for i in range(max_roll):
+                        a_idx = int(torch.argmax(phys_action[0, 5 + i]).item())
+                        print(
+                            f"roll_step={i:02d} uses phys_action at t={5+i:02d} -> action_idx={a_idx:02d}",
+                            flush=True,
+                        )
+                    self._wm.dynamics._debug_img_mode = True
+                    self._wm.dynamics._debug_img_counter = 0
+                else:
+                    self._wm.dynamics._debug_img_mode = False
+
+                prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
+                self._wm.dynamics._debug_img_mode = False
+
+                feat_post = self._wm.dynamics.get_feat(states)
+                feat_prior = self._wm.dynamics.get_feat(prior)
+
+                # -------------------------
+                # Heads
+                # -------------------------
+                reward_head_post = self._wm.heads["reward"](feat_post)
+                reward_head_prior = self._wm.heads["reward"](feat_prior)
+
+                reward_post = reward_head_post.mode()
+                reward_prior = reward_head_prior.mode()
+
+                cont_head_post = self._wm.heads["cont"](feat_post)
+                cont_head_prior = self._wm.heads["cont"](feat_prior)
+
+                recon = self._wm.heads["decoder"](feat_post)["features"].mode()
+                openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
+
+                # -------------------------
+                # Reconstruction
+                # -------------------------
+                model = torch.cat([recon[:, :5], openl], 1)
+                error = ((model - data["features"]) ** 2) * data["mask"]
+                recon_error += (
+                    error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)
+                ).mean().item()
+
+                # -------------------------
+                # Reward NLL
+                # -------------------------
+                reward_nll_post += (
+                    -reward_head_post.log_prob(data["reward"][:, :5])
+                ).mean().item()
+
+                reward_nll_prior += (
+                    -reward_head_prior.log_prob(data["reward"][:, 5:])
+                ).mean().item()
+
+                # -------------------------
+                # Reward MAE
+                # -------------------------
+                true_reward_post = data["reward"][:, :5]
+                true_reward_prior = data["reward"][:, 5:]
+
+                mae_post = torch.abs(reward_post - true_reward_post)
+                mae_prior = torch.abs(reward_prior - true_reward_prior)
+
+                reward_mae_post_sum += mae_post.sum().item()
+                reward_mae_post_count += mae_post.numel()
+
+                reward_mae_prior_sum += mae_prior.sum().item()
+                reward_mae_prior_count += mae_prior.numel()
+
+                terminal_mask_prior = data["is_terminal"][:, 5:].bool().unsqueeze(-1)
+                nonterminal_mask_prior = ~terminal_mask_prior
+
+                if terminal_mask_prior.any():
+                    term_pred = reward_prior[terminal_mask_prior]
+                    term_true = true_reward_prior[terminal_mask_prior]
+
+                    reward_mae_terminal_sum += torch.abs(term_pred - term_true).sum().item()
+                    reward_mae_terminal_count += term_true.numel()
+
+                    sign_ok = (torch.sign(term_pred) == torch.sign(term_true)).sum().item()
+                    terminal_sign_correct += sign_ok
+                    terminal_sign_total += term_true.numel()
+
+                    death_mask = (
+                        data["mortality"][:, 5:].bool().unsqueeze(-1) & terminal_mask_prior
+                    )
+                    surv_mask = (
+                        (~data["mortality"][:, 5:].bool()).unsqueeze(-1) & terminal_mask_prior
+                    )
+
+                    if death_mask.any():
+                        pred_reward_death_terminals.extend(
+                            reward_prior[death_mask].detach().cpu().view(-1).tolist()
+                        )
+                        true_reward_death_terminals.extend(
+                            true_reward_prior[death_mask].detach().cpu().view(-1).tolist()
+                        )
+
+                    if surv_mask.any():
+                        pred_reward_survival_terminals.extend(
+                            reward_prior[surv_mask].detach().cpu().view(-1).tolist()
+                        )
+                        true_reward_survival_terminals.extend(
+                            true_reward_prior[surv_mask].detach().cpu().view(-1).tolist()
+                        )
+
+                if nonterminal_mask_prior.any():
+                    nonterm_pred = reward_prior[nonterminal_mask_prior]
+                    nonterm_true = true_reward_prior[nonterminal_mask_prior]
+                    reward_mae_nonterminal_sum += torch.abs(nonterm_pred - nonterm_true).sum().item()
+                    reward_mae_nonterminal_count += nonterm_true.numel()
+
+                if debug_now:
+                    print("\n[REWARD HEAD ALIGNMENT]")
+                    max_r = min(10, reward_prior.shape[1])
+                    for k in range(max_r):
+                        real_t = 5 + k
+                        pred_r = float(reward_prior[0, k].item())
+                        real_r = float(data["reward"][0, real_t].item())
+                        act_idx = int(torch.argmax(phys_action[0, real_t]).item())
+                        term_flag = int(data["is_terminal"][0, real_t].item())
+                        print(
+                            f"roll_step={k:02d} "
+                            f"uses action at t={real_t:02d} act={act_idx:02d} "
+                            f"pred_reward={pred_r:8.4f} "
+                            f"real_reward={real_r:8.4f} "
+                            f"is_terminal={term_flag}"
+                        )
+
+                # -------------------------
+                # Cont head analysis
+                # -------------------------
+                if self._config.cont_type in ["cont", "mort2"]:
+                    cont_prob_post = cont_head_post.mean
+                    cont_prob_prior = cont_head_prior.mean
+
+                    cont_prob_all = torch.cat([cont_prob_post[:, :5], cont_prob_prior], dim=1)
+                    cont_true_all = data["cont"].float()
+
+                    cont_pred_all = (cont_prob_all >= 0.5).float()
+
+                    cont_correct += (cont_pred_all == cont_true_all).sum().item()
+                    cont_total += cont_true_all.numel()
+
+                    pos_mask = cont_true_all == 1
+                    neg_mask = cont_true_all == 0
+
+                    if pos_mask.any():
+                        cont_pos_correct += (cont_pred_all[pos_mask] == cont_true_all[pos_mask]).sum().item()
+                        cont_pos_total += pos_mask.sum().item()
+                        cont_prob_on_pos.extend(
+                            cont_prob_all[pos_mask].detach().cpu().view(-1).tolist()
+                        )
+
+                    if neg_mask.any():
+                        cont_neg_correct += (cont_pred_all[neg_mask] == cont_true_all[neg_mask]).sum().item()
+                        cont_neg_total += neg_mask.sum().item()
+                        cont_prob_on_neg.extend(
+                            cont_prob_all[neg_mask].detach().cpu().view(-1).tolist()
+                        )
+
+                elif self._config.cont_type == "mort3":
+                    cont_probs_post = cont_head_post.probs
+                    cont_probs_prior = cont_head_prior.probs
+                    cont_probs_all = torch.cat([cont_probs_post[:, :5], cont_probs_prior], dim=1)
+
+                    cont_true_all = data["cont"]
+                    true_cls = torch.argmax(cont_true_all, dim=-1)
+                    pred_cls = torch.argmax(cont_probs_all, dim=-1)
+
+                    cont_correct += (pred_cls == true_cls).sum().item()
+                    cont_total += true_cls.numel()
+
+                    for cls in [0, 1, 2]:
+                        cls_mask = true_cls == cls
+                        if cls_mask.any():
+                            cont_class_correct[cls] += (pred_cls[cls_mask] == true_cls[cls_mask]).sum().item()
+                            cont_class_total[cls] += cls_mask.sum().item()
+                            cont_pred_class_probs[cls].extend(
+                                cont_probs_all[..., cls][cls_mask].detach().cpu().view(-1).tolist()
+                            )
+
+                    terminal_mask = data["is_terminal"].bool()
+                    nonterminal_mask = ~terminal_mask
+
+                    if terminal_mask.any():
+                        mort3_terminal_correct += (pred_cls[terminal_mask] == true_cls[terminal_mask]).sum().item()
+                        mort3_terminal_total += terminal_mask.sum().item()
+
+                    if nonterminal_mask.any():
+                        mort3_nonterminal_correct += (pred_cls[nonterminal_mask] == true_cls[nonterminal_mask]).sum().item()
+                        mort3_nonterminal_total += nonterminal_mask.sum().item()
+
+                    death_terminal_mask = terminal_mask & (true_cls == 0)
+                    survival_terminal_mask = terminal_mask & (true_cls == 1)
+
+                    if death_terminal_mask.any():
+                        mort3_death_terminal_correct += (
+                            pred_cls[death_terminal_mask] == true_cls[death_terminal_mask]
+                        ).sum().item()
+                        mort3_death_terminal_total += death_terminal_mask.sum().item()
+
+                    if survival_terminal_mask.any():
+                        mort3_survival_terminal_correct += (
+                            pred_cls[survival_terminal_mask] == true_cls[survival_terminal_mask]
+                        ).sum().item()
+                        mort3_survival_terminal_total += survival_terminal_mask.sum().item()
+
+                # -------------------------
+                # Returns for mortality plot
+                # -------------------------
+                phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
+                phys_episode_returns.append(phys_episode_return)
+                mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
+
+                # -------------------------
+                # Recon dumps
+                # -------------------------
+                recon_feature = torch.cat([recon[:, :5], openl], 1)
+                features_dict["ori_feat"].append(to_np(data["features"]))
+                features_dict["recon_feat"].append(to_np(recon_feature))
+
+                if debug_now:
+                    first_debug_done = True
 
         if valid_episodes == 0:
             print("No valid episodes for evaluation.", flush=True)
             return
 
-        # -------------------------
-        # Final arrays
-        # -------------------------
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         mortalities = np.array(mortalities, dtype=np.float32)
 
-        # -------------------------
-        # Plot mortality vs return
-        # -------------------------
         fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(
             phys_episode_returns, mortalities
         )
         fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
 
-        # -------------------------
-        # Aggregate metrics
-        # -------------------------
         wm_metrics = {
             "step": epoch,
             "recon_error": recon_error / valid_episodes,
@@ -696,41 +732,42 @@ class Dreamer(nn.Module):
             wm_metrics["pred_reward_survival_terminal_mean"] = float(np.mean(pred_reward_survival_terminals))
             wm_metrics["true_reward_survival_terminal_mean"] = float(np.mean(true_reward_survival_terminals))
 
-        # -------------------------
-        # Cont metrics
-        # -------------------------
         wm_metrics["cont_acc"] = cont_correct / max(cont_total, 1)
 
-        if self._config.cont_type in ["cont", "mort2"]:
+        if self._config.cont_type == "cont":
             wm_metrics["cont_pos_acc"] = cont_pos_correct / max(cont_pos_total, 1)
             wm_metrics["cont_neg_acc"] = cont_neg_correct / max(cont_neg_total, 1)
             wm_metrics["cont_prob_mean_on_pos"] = float(np.mean(cont_prob_on_pos)) if len(cont_prob_on_pos) > 0 else 0.0
             wm_metrics["cont_prob_mean_on_neg"] = float(np.mean(cont_prob_on_neg)) if len(cont_prob_on_neg) > 0 else 0.0
 
+        elif self._config.cont_type == "mort2":
+            wm_metrics["mort2_nondeath_acc"] = cont_pos_correct / max(cont_pos_total, 1)
+            wm_metrics["mort2_death_acc"] = cont_neg_correct / max(cont_neg_total, 1)
+            wm_metrics["mort2_prob_mean_on_nondeath"] = float(np.mean(cont_prob_on_pos)) if len(cont_prob_on_pos) > 0 else 0.0
+            wm_metrics["mort2_prob_mean_on_death"] = float(np.mean(cont_prob_on_neg)) if len(cont_prob_on_neg) > 0 else 0.0
+
         elif self._config.cont_type == "mort3":
             for cls in [0, 1, 2]:
-                wm_metrics[f"cont_class_{cls}_acc"] = cont_class_correct.get(cls, 0) / max(cont_class_total.get(cls, 0), 1)
-                vals = cont_pred_class_probs.get(cls, [])
-                wm_metrics[f"cont_class_{cls}_prob_mean"] = float(np.mean(vals)) if len(vals) > 0 else 0.0
+                wm_metrics[f"cont_class_{cls}_acc"] = cont_class_correct[cls] / max(cont_class_total[cls], 1)
+                wm_metrics[f"cont_class_{cls}_prob_mean"] = (
+                    float(np.mean(cont_pred_class_probs[cls]))
+                    if len(cont_pred_class_probs[cls]) > 0 else 0.0
+                )
 
-        # -------------------------
-        # Save npz
-        # -------------------------
+            wm_metrics["mort3_terminal_acc"] = mort3_terminal_correct / max(mort3_terminal_total, 1)
+            wm_metrics["mort3_nonterminal_acc"] = mort3_nonterminal_correct / max(mort3_nonterminal_total, 1)
+            wm_metrics["mort3_death_terminal_acc"] = mort3_death_terminal_correct / max(mort3_death_terminal_total, 1)
+            wm_metrics["mort3_survival_terminal_acc"] = mort3_survival_terminal_correct / max(mort3_survival_terminal_total, 1)
+
         np.savez(
             os.path.join(self._logdir, f"phys_and_mortality_{epoch}.npz"),
             phys=phys_episode_returns,
             mort=mortalities,
         )
 
-        # -------------------------
-        # Save recon features
-        # -------------------------
         with open(os.path.join(self._logdir, f"result_dict_{epoch}.pkl"), "wb") as f:
             pickle.dump(features_dict, f)
 
-        # -------------------------
-        # Save metrics json
-        # -------------------------
         with open(os.path.join(self._logdir, f"wm_eval_metrics_{epoch}.json"), "w") as f:
             json.dump(wm_metrics, f, indent=2)
 
