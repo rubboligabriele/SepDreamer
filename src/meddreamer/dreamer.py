@@ -160,7 +160,8 @@ class Dreamer(nn.Module):
                 reward_prior = self._wm.heads["reward"](self._wm.dynamics.get_feat(prior)).mode()
                 reward = reward_prior
 
-                phys_episode_return = to_np(reward.sum(dim=1).squeeze())
+                real_phys_return = to_np(data["reward"][:, 5:].sum(dim=1).squeeze())
+                phys_episode_return = real_phys_return
                 phys_episode_returns.append(phys_episode_return)
                 mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
 
@@ -871,7 +872,7 @@ class Dreamer(nn.Module):
                 openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
                 reward_head_prior = self._wm.heads["reward"](feat_prior)
                 reward_prior = reward_head_prior.mode()
-                phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
+                phys_episode_return = to_np(data["reward"][:, 5:].sum(dim=1).squeeze())
                 cont_prior = self._wm.heads["cont"](feat_prior).mode()
 
                 model = torch.cat([recon[:, :5], openl], 1)

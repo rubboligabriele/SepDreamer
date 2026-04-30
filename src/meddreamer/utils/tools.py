@@ -1035,9 +1035,21 @@ def plot_mortality_vs_value(value_values, mortality, num_bins=20, xlabel="Estima
 
 
 def calculate_estimated_mortality(ai_values, bin_centers, smoothed, smoothed_sem):
+
     q_mean = np.mean(ai_values)
+
+    print("\n[MORTALITY INTERP DEBUG]")
+    print("ai_return_mean =", float(q_mean))
+    print("curve_return_min =", float(np.min(bin_centers)))
+    print("curve_return_max =", float(np.max(bin_centers)))
+    print("curve_mort_min =", float(np.nanmin(smoothed)))
+    print("curve_mort_max =", float(np.nanmax(smoothed)))
+    print("ai_return_below_curve =", bool(q_mean < np.min(bin_centers)))
+    print("ai_return_above_curve =", bool(q_mean > np.max(bin_centers)))
+
     ai_mortality = np.interp(q_mean, bin_centers, smoothed)
     ai_std = np.interp(q_mean, bin_centers, smoothed_sem)
+
     return ai_mortality, ai_std
 
 def compute_accuracy(logits, targets):
