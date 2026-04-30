@@ -1240,16 +1240,41 @@ def finalize_ope(ope_trajs, debug=False, top_k=5):
 
     if debug:
         order = np.argsort(-np.abs(final_weights))
-        print("\n[OPE DEBUG] worst trajectories by |final clipped weight|")
+        print("\n[OPE DEBUG] top trajectories by |final clipped weight|")
+
         for rank, idx in enumerate(order[:top_k]):
-            print(
-                f"rank={rank} "
-                f"idx={idx} "
-                f"final_w={final_weights[idx]:.6e} "
-                f"final_w_raw={final_weights_raw[idx]:.6e} "
-                f"return={traj_returns[idx]:.6f} "
-                f"debug={ope_trajs[idx]['debug']}"
-            )
+            dbg = ope_trajs[idx].get("debug", {})
+            actions = dbg.get("actions", [])
+
+            if len(actions) > 0:
+                action_counts = {
+                    int(a): int(actions.count(a))
+                    for a in sorted(set(actions))
+                }
+                action_preview = actions[:30]
+            else:
+                action_counts = {}
+                action_preview = []
+
+            print("\n" + "-" * 80)
+            print(f"rank={rank}")
+            print(f"traj_idx={idx}")
+            print(f"stay_id={dbg.get('stay_id', 'NA')}")
+            print(f"final_w_clipped={final_weights[idx]:.6e}")
+            print(f"final_w_raw={final_weights_raw[idx]:.6e}")
+            print(f"traj_return={traj_returns[idx]:.6f}")
+            print(f"T={dbg.get('T', 'NA')}")
+            print(f"frac_action_0={dbg.get('frac_action_0', 'NA')}")
+            print(f"num_action_0={dbg.get('num_action_0', 'NA')}/{dbg.get('num_steps', 'NA')}")
+            print(f"action_counts={action_counts}")
+            print(f"actions_first_30={action_preview}")
+            print(f"pi_ai_min={dbg.get('pi_ai_min', 'NA'):.6e}")
+            print(f"pi_ai_max={dbg.get('pi_ai_max', 'NA'):.6e}")
+            print(f"pi_b_min={dbg.get('pi_b_min', 'NA'):.6e}")
+            print(f"pi_b_max={dbg.get('pi_b_max', 'NA'):.6e}")
+            print(f"rho_raw_max={dbg.get('rho_raw_max', 'NA'):.6e}")
+            print(f"cum_rho_last={dbg.get('cum_rho_last', 'NA'):.6e}")
+            print(f"cum_rho_raw_last={dbg.get('cum_rho_raw_last', 'NA'):.6e}")
 
     return {
         "is": is_est,

@@ -181,6 +181,7 @@ class Dreamer(nn.Module):
                 pi_ai_clin_list = []
                 pi_b_clin_list = []
                 reward_list = []
+                clin_action_list = []
 
                 T_roll = prior["stoch"].shape[1]
 
@@ -192,6 +193,8 @@ class Dreamer(nn.Module):
                     inp_real = feat_real.detach()
 
                     clin_action_onehot = phys_action[:, t + 1]
+                    clin_action_idx = int(torch.argmax(clin_action_onehot[0]).item())
+                    clin_action_list.append(clin_action_idx)
 
                     ai_dist_real = self._task_behavior.actor(inp_real)
                     logp_ai = ai_dist_real.log_prob(clin_action_onehot)
@@ -253,6 +256,15 @@ class Dreamer(nn.Module):
                     max_ope_steps=30,
                 )
                 if traj_ope is not None:
+
+                    max_steps = min(len(clin_action_list), len(traj_ope["rho"]))
+                    actions_used = np.array(clin_action_list[:max_steps], dtype=np.int64)
+                    traj_ope["debug"]["stay_id"] = str(stay_id)
+                    traj_ope["debug"]["actions"] = actions_used.tolist()
+                    traj_ope["debug"]["frac_action_0"] = float(np.mean(actions_used == 0))
+                    traj_ope["debug"]["num_action_0"] = int(np.sum(actions_used == 0))
+                    traj_ope["debug"]["num_steps"] = int(len(actions_used))
+
                     ope_trajs.append(traj_ope)
 
                 if data["mortality"].any() == 1:
@@ -903,6 +915,7 @@ class Dreamer(nn.Module):
                     pi_ai_clin_list = []
                     pi_b_clin_list = []
                     reward_list = []
+                    clin_action_list = []
 
                     T_roll = prior["stoch"].shape[1]
 
@@ -915,6 +928,9 @@ class Dreamer(nn.Module):
                         inp_real = feat_real.detach()
 
                         clin_action_onehot = phys_action[:, t + 1]
+
+                        clin_action_idx = int(torch.argmax(clin_action_onehot[0]).item())
+                        clin_action_list.append(clin_action_idx)
 
                         ai_dist_real = self._task_behavior.actor(inp_real)
                         logp_ai = ai_dist_real.log_prob(clin_action_onehot)
@@ -969,6 +985,15 @@ class Dreamer(nn.Module):
                         max_ope_steps=30,
                     )
                     if traj_ope is not None:
+                        max_steps = min(len(clin_action_list), len(traj_ope["rho"]))
+                        actions_used = np.array(clin_action_list[:max_steps], dtype=np.int64)
+
+                        traj_ope["debug"]["stay_id"] = str(stay_id)
+                        traj_ope["debug"]["actions"] = actions_used.tolist()
+                        traj_ope["debug"]["frac_action_0"] = float(np.mean(actions_used == 0))
+                        traj_ope["debug"]["num_action_0"] = int(np.sum(actions_used == 0))
+                        traj_ope["debug"]["num_steps"] = int(len(actions_used))
+
                         ope_trajs.append(traj_ope)
 
                     phys_episode_returns.append(phys_episode_return)
