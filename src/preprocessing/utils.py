@@ -155,31 +155,27 @@ def fit_action_bins(
     vaso_doses: np.ndarray,
     n_action_bins: int = 5,
 ) -> Tuple[np.ndarray, Tuple[List[float], List[float]], Tuple[List[float], List[float]]]:
-    """
-    Discretize continuous fluids and vasopressors into a 5x5 grid by quantiles.
-    Returns:
-      - discrete action ids in [0, n_action_bins*n_action_bins - 1]
-      - medians for each fluid/vaso bin
-      - cutoffs for fluids/vaso
-    """
+
     input_amounts = np.asarray(input_amounts, dtype=np.float32)
     vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
 
     input_amounts = np.clip(input_amounts, 0.0, None)
     vaso_doses = np.clip(vaso_doses, 0.0, None)
 
-    bin_percentiles = np.linspace(0, 100, n_action_bins - 1, endpoint=False)
+    # For 5 bins: [25, 50, 75].
+    # Bin 1 is exactly zero; positive doses are split into 4 quantile bins.
+    bin_percentiles = np.linspace(0, 100, n_action_bins)[1:-1]
 
     pos_inputs = input_amounts[input_amounts > 0]
     pos_vaso = vaso_doses[vaso_doses > 0]
 
     if len(pos_inputs) == 0:
-        input_cutoffs = [0.0] * n_action_bins
+        input_cutoffs = [0.0]
     else:
         input_cutoffs = [0.0] + np.percentile(pos_inputs, bin_percentiles).tolist()
 
     if len(pos_vaso) == 0:
-        vaso_cutoffs = [0.0] * n_action_bins
+        vaso_cutoffs = [0.0]
     else:
         vaso_cutoffs = [0.0] + np.percentile(pos_vaso, bin_percentiles).tolist()
 
@@ -212,10 +208,12 @@ def transform_actions(
     input_amounts = np.clip(input_amounts, 0.0, None)
     vaso_doses = np.clip(vaso_doses, 0.0, None)
 
-    action_ids = (
-        len(input_cutoffs) * (np.digitize(input_amounts, input_cutoffs) - 1)
-        + (np.digitize(vaso_doses, vaso_cutoffs) - 1)
-    )
+    n_action_bins = len(input_cutoffs) + 1
+
+    io = np.digitize(input_amounts, input_cutoffs)
+    vc = np.digitize(vaso_doses, vaso_cutoffs)
+
+    action_ids = (io - 1) * n_action_bins + (vc - 1)
     return action_ids.astype(np.int64)
 
 

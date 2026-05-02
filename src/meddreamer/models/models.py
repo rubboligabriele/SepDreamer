@@ -153,9 +153,17 @@ class WorldModel(nn.Module):
                 loss = -pred.log_prob(data[name])
                 if name == "features":
                     loss = loss * data["mask"]
-                    loss = loss.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8) # mean
-                # elif name == "reward":
-                #     loss = loss.mean(list(range(len(loss.shape)))[2:])
+                    loss = loss.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)
+                elif name == "reward":
+                    terminal_weight = getattr(self._config, "terminal_reward_loss_weight", 20.0)
+                    terminal_mask = data["is_terminal"].float()
+                    weight = 1.0 + terminal_weight * terminal_mask
+                    loss = loss * weight
+                elif name == "cont":
+                    terminal_cont_weight = getattr(self._config, "terminal_cont_loss_weight", 20.0)
+                    terminal_mask = data["is_terminal"].float()
+                    weight = 1.0 + terminal_cont_weight * terminal_mask
+                    loss = loss * weight
                 assert loss.shape == embed.shape[:2], (name, loss.shape)
                 losses[name] = loss
             scaled = {
