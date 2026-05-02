@@ -150,70 +150,49 @@ def get_delta_feature_cols(delta_df: pd.DataFrame, feature_cols: List[str]) -> L
 def filter_by_stays(df: pd.DataFrame, stay_ids: np.ndarray) -> pd.DataFrame:
     return df[df[C_ICUSTAYID].isin(stay_ids)].copy()
 
-def fit_action_bins(
-    input_amounts: np.ndarray,
-    vaso_doses: np.ndarray,
-    n_action_bins: int = 5,
-) -> Tuple[np.ndarray, Tuple[List[float], List[float]], Tuple[List[float], List[float]]]:
+def fit_action_bins(input_amounts, vaso_doses, n_action_bins=5):
+    input_amounts = np.clip(np.asarray(input_amounts, dtype=np.float32), 0.0, None)
+    vaso_doses = np.clip(np.asarray(vaso_doses, dtype=np.float32), 0.0, None)
 
-    input_amounts = np.asarray(input_amounts, dtype=np.float32)
-    vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
+    percentiles = np.linspace(0, 100, n_action_bins)[1:-1]  # [25, 50, 75]
 
-    input_amounts = np.clip(input_amounts, 0.0, None)
-    vaso_doses = np.clip(vaso_doses, 0.0, None)
+    input_cutoffs = np.percentile(input_amounts[input_amounts > 0], percentiles).tolist()
+    vaso_cutoffs = np.percentile(vaso_doses[vaso_doses > 0], percentiles).tolist()
 
-    # For 5 bins: [25, 50, 75].
-    # Bin 1 is exactly zero; positive doses are split into 4 quantile bins.
-    bin_percentiles = np.linspace(0, 100, n_action_bins)[1:-1]
+    io = np.zeros_like(input_amounts, dtype=np.int64)
+    vc = np.zeros_like(vaso_doses, dtype=np.int64)
 
-    pos_inputs = input_amounts[input_amounts > 0]
-    pos_vaso = vaso_doses[vaso_doses > 0]
-
-    if len(pos_inputs) == 0:
-        input_cutoffs = [0.0]
-    else:
-        input_cutoffs = [0.0] + np.percentile(pos_inputs, bin_percentiles).tolist()
-
-    if len(pos_vaso) == 0:
-        vaso_cutoffs = [0.0]
-    else:
-        vaso_cutoffs = [0.0] + np.percentile(pos_vaso, bin_percentiles).tolist()
-
-    io = np.digitize(input_amounts, input_cutoffs)
-    vc = np.digitize(vaso_doses, vaso_cutoffs)
+    io[input_amounts > 0] = np.digitize(input_amounts[input_amounts > 0], input_cutoffs) + 1
+    vc[vaso_doses > 0] = np.digitize(vaso_doses[vaso_doses > 0], vaso_cutoffs) + 1
+    
+    actions = io * n_action_bins + vc
 
     median_inputs = [
-        float(np.median(input_amounts[io == bin_num])) if np.any(io == bin_num) else 0.0
-        for bin_num in range(1, n_action_bins + 1)
-    ]
-    median_vaso = [
-        float(np.median(vaso_doses[vc == bin_num])) if np.any(vc == bin_num) else 0.0
-        for bin_num in range(1, n_action_bins + 1)
+        float(np.median(input_amounts[io == b])) if np.any(io == b) else 0.0
+        for b in range(n_action_bins)
     ]
 
-    actions = (io - 1) * n_action_bins + (vc - 1)
+    median_vaso = [
+        float(np.median(vaso_doses[vc == b])) if np.any(vc == b) else 0.0
+        for b in range(n_action_bins)
+    ]
+
     return actions.astype(np.int64), (median_inputs, median_vaso), (input_cutoffs, vaso_cutoffs)
 
-
-def transform_actions(
-    input_amounts: np.ndarray,
-    vaso_doses: np.ndarray,
-    cutoffs: Tuple[List[float], List[float]],
-) -> np.ndarray:
+def transform_actions(input_amounts, vaso_doses, cutoffs):
     input_cutoffs, vaso_cutoffs = cutoffs
+    n_action_bins = len(input_cutoffs) + 2  # 3 cutoff => 5 bin
 
-    input_amounts = np.asarray(input_amounts, dtype=np.float32)
-    vaso_doses = np.asarray(vaso_doses, dtype=np.float32)
+    input_amounts = np.clip(np.asarray(input_amounts, dtype=np.float32), 0.0, None)
+    vaso_doses = np.clip(np.asarray(vaso_doses, dtype=np.float32), 0.0, None)
 
-    input_amounts = np.clip(input_amounts, 0.0, None)
-    vaso_doses = np.clip(vaso_doses, 0.0, None)
+    io = np.zeros_like(input_amounts, dtype=np.int64)
+    vc = np.zeros_like(vaso_doses, dtype=np.int64)
 
-    n_action_bins = len(input_cutoffs) + 1
+    io[input_amounts > 0] = np.digitize(input_amounts[input_amounts > 0], input_cutoffs) + 1
+    vc[vaso_doses > 0] = np.digitize(vaso_doses[vaso_doses > 0], vaso_cutoffs) + 1
+    action_ids = io * n_action_bins + vc
 
-    io = np.digitize(input_amounts, input_cutoffs)
-    vc = np.digitize(vaso_doses, vaso_cutoffs)
-
-    action_ids = (io - 1) * n_action_bins + (vc - 1)
     return action_ids.astype(np.int64)
 
 
