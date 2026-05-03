@@ -36,8 +36,8 @@ defaults:
   units: 512
   act: 'SiLU'
   norm: True
-  terminal_reward_loss_weight: 20.0
-  terminal_cont_loss_weight: 20.0
+  terminal_reward_loss_weight: 200.0
+  terminal_cont_loss_weight: 200.0
 
   fm:
     {use_fm: True, fm_units: 32}

@@ -1178,10 +1178,13 @@ class Dreamer(nn.Module):
     
     def _eval_log(self, model_name, epoch):
         if epoch >= self._config.eval_every and self._should_eval(epoch):
-            if self._config.mode != "behavior":
-                self._eval(self._eval_dataset)
-            else:
+            if self._config.mode == "behavior":
                 self._eval_behavior(self._eval_dataset)
+            elif self._config.mode == "world_model":
+                self._eval(self._eval_dataset)
+                self.eval_wm(self._eval_dataset, epoch)
+            else:
+                self._eval(self._eval_dataset)
 
         if epoch >= self._config.log_every and self._should_log(epoch):
             for name, values in self._metrics.items():

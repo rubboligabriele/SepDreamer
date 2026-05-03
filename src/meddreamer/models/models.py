@@ -117,6 +117,51 @@ class WorldModel(nn.Module):
         # discount (batch_size, batch_length)
         B, T, _ = data["features"].shape
         data = self.preprocess(data)
+
+        if getattr(self._config, "debug", False):
+            bad_transitions = []
+
+            for b in range(B):
+                for t in range(T - 1):
+                    if data["is_terminal"][b, t].item() == 1:
+                        next_is_first = data["is_first"][b, t + 1].item()
+                        next_reward = data["reward"][b, t + 1].item()
+                        next_action = int(torch.argmax(data["action"][b, t + 1]).item())
+
+                        if next_is_first != 1:
+                            bad_transitions.append(
+                                (b, t, next_is_first, next_reward, next_action)
+                            )
+
+            if bad_transitions:
+                print("\n[LEAKAGE WARNING] terminal followed by non-reset!", flush=True)
+                for b, t, next_is_first, next_reward, next_action in bad_transitions[:20]:
+                    print(
+                        f"batch={b} terminal_t={t} "
+                        f"next_t={t+1} is_first={next_is_first} "
+                        f"next_reward={next_reward:.4f} "
+                        f"next_action={next_action}",
+                        flush=True,
+                    )
+            else:
+                print(
+                    "[LEAKAGE CHECK] OK: every terminal is followed by is_first=1 or sequence ends",
+                    flush=True,
+                )
+
+            terminal_positions = data["is_terminal"].nonzero(as_tuple=False)
+            if terminal_positions.numel() > 0:
+                terminal_ts = terminal_positions[:, 1].detach().cpu().numpy()
+                print(
+                    f"[TERMINAL POSITIONS] "
+                    f"n={len(terminal_ts)}, "
+                    f"min_t={terminal_ts.min()}, "
+                    f"max_t={terminal_ts.max()}, "
+                    f"mean_t={terminal_ts.mean():.2f}, "
+                    f"frac_at_last={(terminal_ts == T - 1).mean():.3f}",
+                    flush=True,
+                )
+
         flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
         unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
         features = flatten(data["features"])# (batch_size, batch_length, num_features) -> (batch_size * batch_length, num_features)
