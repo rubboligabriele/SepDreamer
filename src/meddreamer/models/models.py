@@ -336,7 +336,18 @@ class WorldModel(nn.Module):
             status[(obs['is_terminal'] == 1) & (obs['mortality'] == 0)] = 1
             obs['cont'] = F.one_hot(status, num_classes=3) # mortality/discharged/in ICU
 
-        obs["reward"] = obs[self._config.reward_key].unsqueeze(-1)
+        reward = obs[self._config.reward_key].clone()
+
+        if getattr(self._config, "terminal_reward_to_pm1", False):
+            terminal = obs["is_terminal"].bool()
+            death = terminal & (obs["mortality"] == 1)
+            survival = terminal & (obs["mortality"] == 0)
+
+            reward[death] = -1.0
+            reward[survival] = 1.0
+
+        obs["reward"] = reward.unsqueeze(-1)
+
         return obs
 
 class ImagBehavior(nn.Module):
