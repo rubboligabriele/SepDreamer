@@ -39,6 +39,7 @@ defaults:
   terminal_reward_loss_weight: 200.0
   terminal_cont_loss_weight: 200.0
   terminal_reward_to_pm1: True
+  terminal_reward_only: False
 
   fm:
     {use_fm: True, fm_units: 32}

@@ -338,6 +338,9 @@ class WorldModel(nn.Module):
 
         reward = obs[self._config.reward_key].clone()
 
+        if getattr(self._config, "terminal_reward_only", False):
+            reward[obs["is_terminal"] == 0] = 0.0
+
         if getattr(self._config, "terminal_reward_to_pm1", False):
             terminal = obs["is_terminal"].bool()
             death = terminal & (obs["mortality"] == 1)
