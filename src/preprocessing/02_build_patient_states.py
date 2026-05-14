@@ -242,6 +242,9 @@ def build_patient_states_derived(
                 ts_series.append(s[tcol])
 
         for name, _, scol, _ in interval_tables:
+            if name not in ("mechvent",):
+                continue
+
             s = stay_interval.get(name)
             if s is not None and scol in s.columns:
                 ts_series.append(s[scol])
