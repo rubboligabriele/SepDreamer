@@ -823,31 +823,62 @@ def bg_derived(mimiciii=False):
         return None
 
     return """
-        SELECT
-        stay_id AS icustay_id,
-        UNIX_SECONDS(TIMESTAMP(charttime)) AS charttime,
-        po2  AS pao2,
-        pco2 AS paco2,
-        ph,
-        baseexcess,
-        lactate,
-        pao2fio2ratio
-        FROM (
-        SELECT
-            i.stay_id,
-            bg.*,
-            ROW_NUMBER() OVER (
-            PARTITION BY bg.subject_id, bg.hadm_id, bg.charttime
-            ORDER BY ABS(TIMESTAMP_DIFF(bg.charttime, i.intime, SECOND))
-            ) AS rn
-        FROM `physionet-data.mimiciv_3_1_derived.bg` bg
-        JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
-            ON bg.subject_id = i.subject_id
-        AND bg.hadm_id   = i.hadm_id
-        AND bg.charttime BETWEEN i.intime AND i.outtime
-        WHERE bg.charttime IS NOT NULL
+        WITH bg_base AS (
+            SELECT
+                i.stay_id,
+                UNIX_SECONDS(TIMESTAMP(bg.charttime)) AS charttime,
+                bg.po2 AS pao2,
+                bg.pco2 AS paco2,
+                bg.ph,
+                bg.fio2,
+                bg.pao2fio2ratio,
+                ROW_NUMBER() OVER (
+                    PARTITION BY bg.subject_id, bg.hadm_id, bg.charttime
+                    ORDER BY ABS(TIMESTAMP_DIFF(bg.charttime, i.intime, SECOND))
+                ) AS rn
+            FROM `physionet-data.mimiciv_3_1_derived.bg` bg
+            JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+                ON bg.subject_id = i.subject_id
+               AND bg.hadm_id = i.hadm_id
+               AND bg.charttime BETWEEN i.intime AND i.outtime
+            WHERE bg.charttime IS NOT NULL
+        ),
+
+        lactate_be AS (
+            SELECT
+                i.stay_id,
+                UNIX_SECONDS(TIMESTAMP(le.charttime)) AS charttime,
+                MAX(CASE WHEN le.itemid = 50813 AND le.valuenum <= 10000 THEN le.valuenum END) AS lactate,
+                MAX(CASE WHEN le.itemid = 50802 THEN le.valuenum END) AS baseexcess
+            FROM `physionet-data.mimiciv_3_1_hosp.labevents` le
+            JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
+                ON le.subject_id = i.subject_id
+               AND le.hadm_id = i.hadm_id
+               AND le.charttime BETWEEN i.intime AND i.outtime
+            WHERE le.itemid IN (50813, 50802)
+              AND le.valuenum IS NOT NULL
+              AND le.charttime IS NOT NULL
+            GROUP BY i.stay_id, le.charttime
         )
-        WHERE rn = 1
+
+        SELECT
+            COALESCE(bg.stay_id, lb.stay_id) AS icustay_id,
+            COALESCE(bg.charttime, lb.charttime) AS charttime,
+            bg.fio2 AS fio2,
+            bg.pao2,
+            bg.paco2,
+            bg.ph,
+            lb.baseexcess,
+            lb.lactate,
+            bg.pao2fio2ratio
+        FROM (
+            SELECT *
+            FROM bg_base
+            WHERE rn = 1
+        ) bg
+        FULL OUTER JOIN lactate_be lb
+            ON bg.stay_id = lb.stay_id
+           AND bg.charttime = lb.charttime
         ORDER BY icustay_id, charttime;
     """
 
