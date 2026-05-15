@@ -299,8 +299,8 @@ def main():
     parser.add_argument(
         "--episodes-dir",
         type=str,
-        required=True,
-        help="Path to episodes directory, e.g. data/meddreamer_dataset/mimic/episodes",
+        default="data/meddreamer_dataset/mimic/episodes",
+        help="Path to episodes directory",
     )
     parser.add_argument(
         "--num-actions",

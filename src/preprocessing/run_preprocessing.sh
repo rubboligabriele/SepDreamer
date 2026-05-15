@@ -103,6 +103,14 @@ python -m src.preprocessing.07_build_meddreamer_episodes \
     --output data/meddreamer_dataset
 fi
 
+if run_step 8; then
+echo "=============================="
+echo "STEP 8 — MedDreamer episodes analysis"
+echo "=============================="
+
+python -m src.preprocessing.analysis.meddreamer_episodes_analysis
+fi
+
 echo "=============================="
 echo "PREPROCESSING PIPELINE DONE"
 echo "=============================="
