@@ -122,30 +122,9 @@ def remove_outliers(df, provenance=None):
     return df
 
 
-def compute_mask_delta(df, feature_cols, id_cols):
-    """
-    Compute MedDreamer-style mask and delta.
-
-    Rules:
-
-    STATIC FEATURES (patient context variables)
-        - mask = 1 at all timesteps
-        - delta = 0 at all timesteps
-
-    DYNAMIC FEATURES (time-varying clinical variables)
-        - mask[t, d] = 1 if observed at timestep t, else 0
-
-        AFI delta definition:
-            delta[t, d] =
-                0                                   if t == 0
-                timestep[t] - timestep[t-1]         if mask[t-1, d] == 1
-                timestep[t] - timestep[t-1] + delta[t-1, d]
-                                                    if mask[t-1, d] == 0
-    """
-
+def compute_mask_delta(df, feature_cols, id_cols, observed_mask=None):
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
 
-    # Keep static features only if they are present in the dataset
     static_cols = [
         C_AGE,
         C_GENDER,
@@ -154,27 +133,21 @@ def compute_mask_delta(df, feature_cols, id_cols):
         C_WEIGHT,
     ]
     static_cols = [c for c in static_cols if c in feature_cols]
-
     dynamic_cols = [c for c in feature_cols if c not in static_cols]
-
-    # --------------------------------------------------
-    # BUILD MASK
-    # --------------------------------------------------
 
     mask_df = df[id_cols].copy()
 
-    if dynamic_cols:
-        mask_df[dynamic_cols] = (~df[dynamic_cols].isna()).astype(np.float32)
+    if observed_mask is None:
+        if dynamic_cols:
+            mask_df[dynamic_cols] = (~df[dynamic_cols].isna()).astype(np.float32)
+    else:
+        if dynamic_cols:
+            mask_df[dynamic_cols] = observed_mask[dynamic_cols].astype(np.float32).to_numpy()
 
     if static_cols:
         mask_df[static_cols] = 1.0
 
-    # Force the same column order as patient_states_clean
     mask_df = mask_df[id_cols + feature_cols]
-
-    # --------------------------------------------------
-    # BUILD DELTA
-    # --------------------------------------------------
 
     delta_df = df[id_cols].copy()
     delta_vals = np.zeros((len(df), len(feature_cols)), dtype=np.float32)
@@ -189,16 +162,14 @@ def compute_mask_delta(df, feature_cols, id_cols):
 
         d = np.zeros((len(idx), len(feature_cols)), dtype=np.float64)
 
-        # Static features: delta always zero
         if stat_idx:
             d[:, stat_idx] = 0.0
 
-        # Dynamic features: AFI accumulation rule
         if dyn_idx:
             m_dyn = mask_df.loc[idx, dynamic_cols].to_numpy(dtype=np.float32)
 
             for k in range(1, len(idx)):
-                dt = max(0.0, t[k] - t[k - 1])
+                dt = max(0.0, t[k] - t[k - 1]) / 3600.0  # hours, come medR
 
                 d[k, dyn_idx] = np.where(
                     m_dyn[k - 1, :] == 1.0,
@@ -209,8 +180,6 @@ def compute_mask_delta(df, feature_cols, id_cols):
         delta_vals[idx, :] = d.astype(np.float32)
 
     delta_df[feature_cols] = delta_vals
-
-    # Force the same column order as patient_states_clean
     delta_df = delta_df[id_cols + feature_cols]
 
     return mask_df, delta_df
@@ -273,8 +242,46 @@ if __name__ == "__main__":
     ID_COLS = [C_BLOC, C_ICUSTAYID, C_TIMESTEP]
     feature_cols = [c for c in df.columns if c not in ID_COLS]
 
-    # ---- mask/delta
-    mask_df, delta_df = compute_mask_delta(df, feature_cols=feature_cols, id_cols=ID_COLS)
+    df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
+
+    # ---- raw observation mask BEFORE forward fill
+    static_cols = [
+        C_AGE,
+        C_GENDER,
+        C_ELIXHAUSER,
+        C_RE_ADMISSION,
+        C_WEIGHT,
+    ]
+    static_cols = [c for c in static_cols if c in feature_cols]
+    dynamic_cols = [c for c in feature_cols if c not in static_cols]
+
+    observed_mask = df[dynamic_cols].notna().astype(np.float32)
+
+    # ---- mask/delta from original missingness
+    mask_df, delta_df = compute_mask_delta(
+        df,
+        feature_cols=feature_cols,
+        id_cols=ID_COLS,
+        observed_mask=observed_mask,
+    )
+
+    # ---- forward fill values AFTER mask/delta
+    print("Forward filling dynamic features")
+    df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
+
+    if dynamic_cols:
+        df[dynamic_cols] = (
+            df.groupby(C_ICUSTAYID, sort=False)[dynamic_cols]
+            .ffill()
+        )
+
+    # static columns should already be filled by construction, but this is safe
+    if static_cols:
+        df[static_cols] = (
+            df.groupby(C_ICUSTAYID, sort=False)[static_cols]
+            .ffill()
+            .bfill()
+        )
 
     # ---- write
     print("Write output")
