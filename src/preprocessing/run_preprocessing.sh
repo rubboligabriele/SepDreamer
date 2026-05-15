@@ -49,7 +49,8 @@ python -m src.preprocessing.03_build_mask_and_delta \
     data/intermediates/patient_states/patient_states.csv \
     data/intermediates/patient_states/patient_states_clean.csv \
     --mask-out data/intermediates/patient_states/mask.csv \
-    --delta-out data/intermediates/patient_states/delta.csv
+    --delta-out data/intermediates/patient_states/delta.csv \
+    --delta-fresh-out data/intermediates/patient_states/delta_fresh.csv
 fi
 
 if run_step 4; then

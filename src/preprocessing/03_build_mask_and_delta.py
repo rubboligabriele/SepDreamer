@@ -185,6 +185,50 @@ def compute_mask_delta(df, feature_cols, id_cols, observed_mask=None):
     return mask_df, delta_df
 
 
+def compute_freshness_delta(df, feature_cols, id_cols, observed_mask=None):
+    df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
+
+    static_cols = [C_AGE, C_GENDER, C_ELIXHAUSER, C_RE_ADMISSION, C_WEIGHT]
+    static_cols = [c for c in static_cols if c in feature_cols]
+    dynamic_cols = [c for c in feature_cols if c not in static_cols]
+
+    delta_df = df[id_cols].copy()
+    delta_vals = np.zeros((len(df), len(feature_cols)), dtype=np.float32)
+
+    feature_to_idx = {c: i for i, c in enumerate(feature_cols)}
+    dyn_idx = [feature_to_idx[c] for c in dynamic_cols]
+    stat_idx = [feature_to_idx[c] for c in static_cols]
+
+    if observed_mask is None:
+        observed_mask = df[dynamic_cols].notna().astype(np.float32)
+
+    for _, g in df.groupby(C_ICUSTAYID, sort=False):
+        idx = g.index.to_numpy()
+        t = g[C_TIMESTEP].to_numpy(dtype=np.float64)
+
+        d = np.zeros((len(idx), len(feature_cols)), dtype=np.float64)
+
+        if stat_idx:
+            d[:, stat_idx] = 0.0
+
+        if dyn_idx:
+            m_dyn = observed_mask.loc[idx, dynamic_cols].to_numpy(dtype=np.float32)
+
+            for k in range(1, len(idx)):
+                dt = max(0.0, t[k] - t[k - 1]) / 3600.0
+
+                d[k, dyn_idx] = np.where(
+                    m_dyn[k, :] == 1.0,
+                    0.0,
+                    d[k - 1, dyn_idx] + dt
+                )
+
+        delta_vals[idx, :] = d.astype(np.float32)
+
+    delta_df[feature_cols] = delta_vals
+    return delta_df[id_cols + feature_cols]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Patient states postprocess (MedDreamer-style): outliers, derived features, mask & delta."
@@ -210,6 +254,8 @@ if __name__ == "__main__":
                         help="Path to write MedDreamer mask (1=observed,0=missing)")
     parser.add_argument("--delta-out", dest="delta_out", default=None, type=str,
                         help="Path to write MedDreamer delta (time since last observed per feature)")
+    parser.add_argument("--delta-fresh-out", dest="delta_fresh_out", default=None, type=str,
+                    help="Path to write freshness delta for medR reward computation")
     parser.add_argument("--mask-file", dest="mask_file", default=None, type=str,
                         help="Diff mask file (+1 added/changed, -1 removed, 0 unchanged)")
     parser.add_argument("--provenance-dir", dest="provenance_dir", default=None, type=str,
@@ -265,6 +311,16 @@ if __name__ == "__main__":
         observed_mask=observed_mask,
     )
 
+    delta_fresh_df = compute_freshness_delta(
+        df,
+        feature_cols=feature_cols,
+        id_cols=ID_COLS,
+        observed_mask=observed_mask,
+    )
+
+    assert list(delta_df.columns) == list(delta_fresh_df.columns)
+    assert len(delta_df) == len(delta_fresh_df)
+
     # ---- forward fill values AFTER mask/delta
     print("Forward filling dynamic features")
     df = df.sort_values([C_ICUSTAYID, C_TIMESTEP]).reset_index(drop=True)
@@ -292,6 +348,9 @@ if __name__ == "__main__":
 
     if args.delta_out:
         delta_df.to_csv(args.delta_out, index=False, float_format="%g")
+
+    if args.delta_fresh_out:
+        delta_fresh_df.to_csv(args.delta_fresh_out, index=False, float_format="%g")
 
     if provenance:
         provenance.close()
