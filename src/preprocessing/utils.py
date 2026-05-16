@@ -196,6 +196,26 @@ def transform_actions(input_amounts, vaso_doses, cutoffs):
     return action_ids.astype(np.int64)
 
 
+def transform_actions_separate(input_amounts, vaso_doses, cutoffs):
+    input_cutoffs, vaso_cutoffs = cutoffs
+    n_action_bins = len(input_cutoffs) + 2
+
+    input_amounts = np.clip(np.asarray(input_amounts, dtype=np.float32), 0.0, None)
+    vaso_doses = np.clip(np.asarray(vaso_doses, dtype=np.float32), 0.0, None)
+
+    io = np.zeros_like(input_amounts, dtype=np.int64)
+    vc = np.zeros_like(vaso_doses, dtype=np.int64)
+
+    io[input_amounts > 0] = (
+        np.digitize(input_amounts[input_amounts > 0], input_cutoffs) + 1
+    )
+    vc[vaso_doses > 0] = (
+        np.digitize(vaso_doses[vaso_doses > 0], vaso_cutoffs) + 1
+    )
+
+    return io.astype(np.int64), vc.astype(np.int64)
+
+
 def one_hot_actions(action_ids: np.ndarray, num_actions: int) -> np.ndarray:
     action_ids = np.asarray(action_ids, dtype=np.int64)
     out = np.zeros((len(action_ids), num_actions), dtype=np.float32)

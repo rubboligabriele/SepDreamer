@@ -266,6 +266,8 @@ if __name__ == "__main__":
                         help="Optional path to mask CSV")
     parser.add_argument("--delta", type=str, default=None,
                         help="Optional path to delta CSV")
+    parser.add_argument("--delta-fresh", type=str, default=None,
+                    help="Optional path to freshness delta CSV for medR reward")
     parser.add_argument("--qstime", type=str, default=None,
                         help="Optional path to qstime CSV")
 
@@ -321,6 +323,7 @@ if __name__ == "__main__":
 
     mask = load_csv(args.mask) if args.mask else None
     delta = load_csv(args.delta) if args.delta else None
+    delta_fresh = load_csv(args.delta_fresh) if args.delta_fresh else None
     qstime = load_csv(args.qstime) if args.qstime else None
 
     print(f"States stays before filtering: {states[C_ICUSTAYID].nunique()}")
@@ -380,6 +383,9 @@ if __name__ == "__main__":
         if delta is not None:
             delta = delta[~delta[C_ICUSTAYID].isin(remove_ids)].copy()
 
+        if delta_fresh is not None:
+            delta_fresh = delta_fresh[~delta_fresh[C_ICUSTAYID].isin(remove_ids)].copy()
+
         if qstime is not None:
             qstime = qstime[~qstime[C_ICUSTAYID].isin(remove_ids)].copy()
 
@@ -430,6 +436,13 @@ if __name__ == "__main__":
         delta_f = delta[delta[C_ICUSTAYID].isin(keep_ids)].copy()
         delta_f.to_csv(
             os.path.join(args.output_dir, "delta_filtered.csv"),
+            index=False
+        )
+
+    if delta_fresh is not None:
+        delta_fresh_f = delta_fresh[delta_fresh[C_ICUSTAYID].isin(keep_ids)].copy()
+        delta_fresh_f.to_csv(
+            os.path.join(args.output_dir, "delta_fresh_filtered.csv"),
             index=False
         )
 
