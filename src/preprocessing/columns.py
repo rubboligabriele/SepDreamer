@@ -102,6 +102,9 @@ C_OUTPUT_TOTAL = 'output_total'
 C_OUTPUT_STEP = 'output_step'
 C_CUMULATED_BALANCE = 'cumulated_balance'
 
+C_IV_FLUID_5Q = "iv_fluid_5quantile"
+C_VASO_5Q = "vaso_5quantile"
+
 ######### Onset data
 
 C_FIRST_TIMESTEP = "first_timestep"
