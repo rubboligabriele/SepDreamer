@@ -1,5 +1,7 @@
 import numpy as np
+import pandas as pd
 import math
+from src.preprocessing.columns import *
 
 # --- 1. PARAMETER DEFINITIONS (HARD-CODED FROM DATA) ---
 
@@ -20,6 +22,24 @@ def normalize_raw(x, min_val, max_val):
 # - Use decay_low or decay_high style from Champion 3 and 4 for directional features accordingly.
 # and directional decay parameters for directional features.
 
+MEDR_FEATURE_MAP = {
+    "sofa_24hours": C_SOFA,
+    "baseexcess": C_ARTERIAL_BE,
+    "lactate": C_ARTERIAL_LACTATE,
+    "urineoutput": C_URINE_OUTPUT,
+    "mbp": C_MEANBP,
+    "heartrate": C_HR,
+}
+
+MEDR_RAW_RANGES = {
+    "sofa_24hours": (0.0, 23.0),
+    "baseexcess": (-25.0, 25.0),
+    "lactate": (0.3, 29.0),
+    "urineoutput": (0.0, 800.0),
+    "mbp": (40.0, 140.0),
+    "heartrate": (40.0, 160.0),
+}
+
 SURVIVAL_CONFIG = {
     'sofa_24hours': {
         'type': 'directional_decay',
@@ -32,33 +52,33 @@ SURVIVAL_CONFIG = {
 
     'baseexcess': {
         'type': 'bell',
-        'target': normalize_raw(-2.0, -25.0, 0.0),  # ~0.92
-        'sigma': 0.1  # moderate spread from Champion 1 and 4
+        'target': normalize_raw(-2.0, *MEDR_RAW_RANGES["baseexcess"]),
+        'sigma': 0.1,
     },
 
     'lactate': {
-        'type': 'decay_lower',  # penalize values above target
-        'target': normalize_raw(1.6, 0.3, 29.0),  # ~0.045
-        'sigma': 0.05  # for decay rate calculation
+        'type': 'decay_lower',
+        'target': normalize_raw(1.6, *MEDR_RAW_RANGES["lactate"]),
+        'sigma': 0.05,
     },
 
     'urineoutput': {
         'type': 'directional_decay',
-        'direction': 'high',  # higher urine output better
-        'threshold': normalize_raw(40.0, -3000.0, 4400.0),  # ~0.414
-        'k': 5.0  # steep decay below threshold
+        'direction': 'high',
+        'threshold': normalize_raw(40.0, *MEDR_RAW_RANGES["urineoutput"]),
+        'k': 5.0,
     },
 
     'mbp': {
         'type': 'bell',
-        'target': normalize_raw(75.0, 20.0, 200.0),  # ~0.31
-        'sigma': 0.1
+        'target': normalize_raw(75.0, *MEDR_RAW_RANGES["mbp"]),
+        'sigma': 0.1,
     },
 
     'heartrate': {
         'type': 'bell',
-        'target': normalize_raw(85.0, 23.0, 212.0),  # ~0.33
-        'sigma': 0.1
+        'target': normalize_raw(85.0, *MEDR_RAW_RANGES["heartrate"]),
+        'sigma': 0.1,
     },
 }
 
@@ -84,6 +104,178 @@ COMPONENT_WEIGHTS = {
     'competence': 1 / 3,
 }
 
+
+def normalize_feature_value(feat_name, raw_value):
+    if raw_value is None or pd.isna(raw_value):
+        return None
+
+    lo, hi = MEDR_RAW_RANGES[feat_name]
+    val = normalize_raw(float(raw_value), lo, hi)
+
+    # medR expects normalized values in [0, 1]
+    return float(np.clip(val, 0.0, 1.0))
+
+
+def build_medr_state(row, delta_row):
+    """
+    Build medR state:
+        state = {
+            medr_feature_name: (normalized_value, freshness_delta_hours)
+        }
+
+    delta_row should come from delta_fresh_df, not MedDreamer delta.
+    """
+    state = {}
+
+    for medr_name, col_name in MEDR_FEATURE_MAP.items():
+        raw_value = row[col_name] if col_name in row.index else None
+        delta_t = delta_row[col_name] if col_name in delta_row.index else None
+
+        state[medr_name] = (
+            normalize_feature_value(medr_name, raw_value),
+            None if pd.isna(delta_t) else float(delta_t),
+        )
+
+    return state
+
+
+def build_medr_action(action_row):
+    """
+    medR action uses already-binned action levels:
+        vaso_5quantile: 0..4
+        iv_fluid_5quantile: 0..4
+    """
+    return {
+        "iv_fluid_5quantile": int(action_row["iv_fluid_5quantile"]),
+        "vaso_5quantile": int(action_row["vaso_5quantile"]),
+    }
+
+
+def print_medr_feature_statistics(states_df):
+    print("\n===== FEATURE RANGE STATISTICS =====\n")
+
+    for name, col in MEDR_FEATURE_MAP.items():
+        if col not in states_df.columns:
+            print(f"[WARNING] Missing column: {col}")
+            continue
+
+        x = states_df[col].dropna()
+        if len(x) == 0:
+            print(f"[WARNING] Column {col} is empty")
+            continue
+
+        print(f"Feature: {name}")
+        print(f"  Column : {col}")
+        print(f"  Min    : {x.min():.4f}")
+        print(f"  P1     : {x.quantile(0.01):.4f}")
+        print(f"  P5     : {x.quantile(0.05):.4f}")
+        print(f"  Median : {x.median():.4f}")
+        print(f"  P95    : {x.quantile(0.95):.4f}")
+        print(f"  P99    : {x.quantile(0.99):.4f}")
+        print(f"  Max    : {x.max():.4f}")
+        print("-" * 50)
+
+
+def add_medr_reward_to_dataframe(
+    states_df,
+    actions_df,
+    delta_fresh_df,
+    reward_col=C_REWARD,
+    gamma=0.99,
+):
+    """
+    Computes medR transition reward t -> t+1 and stores it in row t+1.
+
+    Requirements:
+    - states_df has patient states after forward fill
+    - delta_fresh_df has freshness delta per feature
+    - actions_df has outgoing action a_t, with columns:
+        iv_fluid_5quantile, vaso_5quantile
+    """
+
+    print_medr_feature_statistics(states_df)
+
+    required_action_cols = [
+        C_ICUSTAYID,
+        C_TIMESTEP,
+        "iv_fluid_5quantile",
+        "vaso_5quantile",
+    ]
+
+    for col in MEDR_FEATURE_MAP.values():
+        if col not in states_df.columns:
+            raise ValueError(f"Missing medR state feature column: {col}")
+        if col not in delta_fresh_df.columns:
+            raise ValueError(f"Missing medR freshness delta column: {col}")
+
+    for c in required_action_cols:
+        if c not in actions_df.columns:
+            raise ValueError(f"Missing required action column: {c}")
+
+    df = states_df.sort_values([C_ICUSTAYID, C_TIMESTEP]).copy()
+    delta_fresh_df = delta_fresh_df.sort_values([C_ICUSTAYID, C_TIMESTEP]).copy()
+    actions_df = actions_df.sort_values([C_ICUSTAYID, C_TIMESTEP]).copy()
+
+    rewards = np.zeros(len(df), dtype=np.float32)
+
+    # Faster lookup by key
+    delta_lookup = delta_fresh_df.set_index([C_ICUSTAYID, C_TIMESTEP])
+    action_lookup = actions_df.set_index([C_ICUSTAYID, C_TIMESTEP])
+
+    for stay_id, g in df.groupby(C_ICUSTAYID, sort=False):
+        idx = g.index.to_list()
+
+        if len(idx) == 0:
+            continue
+
+        # First row has no previous transition
+        rewards[df.index.get_loc(idx[0])] = 0.0
+
+        first_time = float(df.loc[idx[0], C_TIMESTEP])
+
+        for k in range(1, len(idx)):
+            prev_i = idx[k - 1]
+            cur_i = idx[k]
+
+            prev_row = df.loc[prev_i]
+            cur_row = df.loc[cur_i]
+
+            prev_key = (prev_row[C_ICUSTAYID], prev_row[C_TIMESTEP])
+            cur_key = (cur_row[C_ICUSTAYID], cur_row[C_TIMESTEP])
+
+            if prev_key not in delta_lookup.index:
+                raise ValueError(f"Missing freshness delta for previous key: {prev_key}")
+
+            if cur_key not in delta_lookup.index:
+                raise ValueError(f"Missing freshness delta for current key: {cur_key}")
+
+            if prev_key not in action_lookup.index:
+                raise ValueError(f"Missing action for transition starting at key: {prev_key}")
+
+            prev_delta = delta_lookup.loc[prev_key]
+            cur_delta = delta_lookup.loc[cur_key]
+            action_row = action_lookup.loc[prev_key]
+
+            s = build_medr_state(prev_row, prev_delta)
+            s_next = build_medr_state(cur_row, cur_delta)
+            a = build_medr_action(action_row)
+
+            # t should be relative episode time, not Unix timestamp
+            t = (float(prev_row[C_TIMESTEP]) - first_time) / 3600.0
+            t_next = (float(cur_row[C_TIMESTEP]) - first_time) / 3600.0
+
+            rewards[df.index.get_loc(cur_i)] = reward_function(
+                s=s,
+                t=t,
+                s_next=s_next,
+                t_next=t_next,
+                a=a,
+                gamma=gamma,
+            )
+
+    df[reward_col] = rewards
+    return df
+
 # --- 2. MATH HELPER FUNCTIONS (NO PLACEHOLDERS) ---
 
 def time_decay(t):
@@ -108,7 +300,7 @@ def compute_survival_score(val, params):
     Returns score in [0,1].
     """
 
-    if val is None:
+    if val is None or pd.isna(val):
         # Missing value: neutral survival score 0.5
         return 0.5
 

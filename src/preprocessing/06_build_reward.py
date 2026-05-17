@@ -2,25 +2,18 @@ import os
 import argparse
 
 from src.preprocessing.columns import *
-from src.preprocessing.utils import load_csv
-from src.preprocessing.reward import add_reward_to_dataframe
+from src.preprocessing.utils import load_csv, fit_action_bins, transform_actions_separate, save_pickle
+from src.preprocessing.reward_medR import add_medr_reward_to_dataframe
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 DEFAULT_REWARD_COL = "reward"
 
+IV_BIN_COL = "iv_fluid_5quantile"
+VASO_BIN_COL = "vaso_5quantile"
 
-def merge_outcome_if_needed(
-    df,
-    outcome_df=None,
-    outcome_col=C_MORTA_90,
-):
-    """
-    Ensure the main dataframe contains the outcome column needed for terminal reward.
 
-    If the outcome column is already present in df, do nothing.
-    Otherwise, merge it from outcome_df using icustayid.
-    """
+def merge_outcome_if_needed(df, outcome_df=None, outcome_col=C_MORTA_90):
     if outcome_col in df.columns:
         return df
 
@@ -33,121 +26,82 @@ def merge_outcome_if_needed(
     required_cols = [C_ICUSTAYID, outcome_col]
     missing_cols = [c for c in required_cols if c not in outcome_df.columns]
     if missing_cols:
-        raise ValueError(
-            f"Outcome file is missing required columns: {missing_cols}"
-        )
+        raise ValueError(f"Outcome file is missing required columns: {missing_cols}")
 
-    outcome_one_row = outcome_df[[C_ICUSTAYID, outcome_col]].drop_duplicates(subset=C_ICUSTAYID)
-
-    df = df.merge(
-        outcome_one_row,
-        how="left",
-        on=C_ICUSTAYID,
-        suffixes=("", "_outcome")
+    outcome_one_row = (
+        outcome_df[[C_ICUSTAYID, outcome_col]]
+        .drop_duplicates(subset=C_ICUSTAYID)
     )
 
-    return df
+    return df.merge(outcome_one_row, how="left", on=C_ICUSTAYID, suffixes=("", "_outcome"))
+
+
+def add_binned_action_columns(
+    actions_df,
+    fluid_col=C_INPUT_STEP,
+    vaso_col=C_MAX_DOSE_VASO,
+    num_action_bins=5,
+):
+    actions_df = actions_df.copy()
+
+    _, action_medians, action_cutoffs = fit_action_bins(
+        actions_df[fluid_col].astype(float).fillna(0.0).values,
+        actions_df[vaso_col].astype(float).fillna(0.0).values,
+        n_action_bins=num_action_bins,
+    )
+
+    iv_bins, vaso_bins = transform_actions_separate(
+        actions_df[fluid_col].astype(float).fillna(0.0).values,
+        actions_df[vaso_col].astype(float).fillna(0.0).values,
+        action_cutoffs,
+    )
+
+    actions_df["iv_fluid_5quantile"] = iv_bins
+    actions_df["vaso_5quantile"] = vaso_bins
+
+    return actions_df, action_medians, action_cutoffs
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description=(
-            "Add sepsis reward column to a patient-states dataframe. "
-            "Intermediate rewards follow the SOFA/lactate formulation, "
-            "terminal rewards use the outcome column."
-        )
+        description="Add medR reward column to a patient-states dataframe."
     )
 
-    parser.add_argument(
-        "input",
-        type=str,
-        help="Input CSV path (typically patient_states_filtered.csv)"
-    )
-    parser.add_argument(
-        "output",
-        type=str,
-        help="Output CSV path"
-    )
+    parser.add_argument("input", type=str, help="Input states CSV, e.g. patient_states_filtered.csv")
+    parser.add_argument("output", type=str, help="Output states CSV with reward")
+
+    parser.add_argument("--actions", type=str, required=True, help="Path to actions_filtered.csv")
+    parser.add_argument("--delta-fresh", type=str, required=True, help="Path to delta_fresh_filtered.csv")
+
+    parser.add_argument("--outcome-file", type=str, default=None)
+    parser.add_argument("--outcome-col", type=str, default=C_MORTA_90)
+
+    parser.add_argument("--fluid-col", type=str, default=C_INPUT_STEP)
+    parser.add_argument("--vaso-col", type=str, default=C_MAX_DOSE_VASO)
+    parser.add_argument("--num-action-bins", type=int, default=5)
+
+    parser.add_argument("--reward-col", type=str, default=DEFAULT_REWARD_COL)
+    parser.add_argument("--gamma", type=float, default=0.99)
 
     parser.add_argument(
-        "--outcome-file",
-        dest="outcome_file",
+        "--action-bin-config-out",
         type=str,
         default=None,
-        help=(
-            "Optional CSV containing icustayid and outcome column "
-            f"(e.g. sepsis_cohort.csv with {C_MORTA_90}). "
-            "Used only if outcome is not already present in input."
-        )
-    )
-
-    parser.add_argument(
-        "--outcome-col",
-        dest="outcome_col",
-        type=str,
-        default=C_MORTA_90,
-        help=f"Outcome column name for terminal reward (default: {C_MORTA_90})"
-    )
-
-    parser.add_argument(
-        "--sofa-col",
-        dest="sofa_col",
-        type=str,
-        default=C_SOFA,
-        help=f"SOFA column name (default: {C_SOFA})"
-    )
-
-    parser.add_argument(
-        "--lactate-col",
-        dest="lactate_col",
-        type=str,
-        default=C_ARTERIAL_LACTATE,
-        help=f"Lactate column name (default: {C_ARTERIAL_LACTATE})"
-    )
-
-    parser.add_argument(
-        "--reward-col",
-        dest="reward_col",
-        type=str,
-        default=DEFAULT_REWARD_COL,
-        help=f"Reward column name to write (default: {DEFAULT_REWARD_COL})"
-    )
-
-    parser.add_argument(
-        "--c0",
-        dest="c0",
-        type=float,
-        default=-0.025,
-        help="SOFA stagnation penalty coefficient"
-    )
-    parser.add_argument(
-        "--c1",
-        dest="c1",
-        type=float,
-        default=-0.125,
-        help="SOFA delta coefficient"
-    )
-    parser.add_argument(
-        "--c2",
-        dest="c2",
-        type=float,
-        default=-2.0,
-        help="Lactate tanh delta coefficient"
-    )
-    parser.add_argument(
-        "--r-terminal",
-        dest="r_terminal",
-        type=float,
-        default=15.0,
-        help="Absolute terminal reward"
+        help="Optional path to save medR action bin config used for reward."
     )
 
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
-    print("Reading input dataframe...")
-    df = load_csv(args.input)
+    print("Reading states...")
+    states_df = load_csv(args.input)
+
+    print("Reading actions...")
+    actions_df = load_csv(args.actions)
+
+    print("Reading freshness delta...")
+    delta_fresh_df = load_csv(args.delta_fresh)
 
     outcome_df = None
     if args.outcome_file is not None:
@@ -155,33 +109,53 @@ def main():
         outcome_df = load_csv(args.outcome_file)
 
     print("Checking outcome column...")
-    df = merge_outcome_if_needed(
-        df,
+    states_df = merge_outcome_if_needed(
+        states_df,
         outcome_df=outcome_df,
         outcome_col=args.outcome_col,
     )
 
-    print("Computing rewards...")
-    df = add_reward_to_dataframe(
-        df,
-        outcome_col=args.outcome_col,
-        sofa_col=args.sofa_col,
-        lactate_col=args.lactate_col,
-        reward_col=args.reward_col,
-        c0=args.c0,
-        c1=args.c1,
-        c2=args.c2,
-        r_terminal=args.r_terminal,
+    print("Binning actions for medR reward...")
+    actions_df, action_medians, action_cutoffs = add_binned_action_columns(
+        actions_df,
+        fluid_col=args.fluid_col,
+        vaso_col=args.vaso_col,
+        num_action_bins=args.num_action_bins,
     )
 
-    n_nan = int(df[args.reward_col].isna().sum())
+    if args.action_bin_config_out is not None:
+        os.makedirs(os.path.dirname(args.action_bin_config_out), exist_ok=True)
+        save_pickle(
+            args.action_bin_config_out,
+            {
+                "num_action_bins": args.num_action_bins,
+                "fluid_col": args.fluid_col,
+                "vaso_col": args.vaso_col,
+                "action_cutoffs": action_cutoffs,
+                "action_medians": action_medians,
+                "iv_bin_col": IV_BIN_COL,
+                "vaso_bin_col": VASO_BIN_COL,
+            },
+        )
+        print(f"Saved action bin config to {args.action_bin_config_out}")
+
+    print("Computing medR rewards...")
+    states_df = add_medr_reward_to_dataframe(
+        states_df=states_df,
+        actions_df=actions_df,
+        delta_fresh_df=delta_fresh_df,
+        reward_col=args.reward_col,
+        gamma=args.gamma,
+    )
+
+    n_nan = int(states_df[args.reward_col].isna().sum())
     if n_nan > 0:
         print(f"WARNING: found {n_nan} NaN rewards")
     else:
         print("Reward computation finished. No NaN rewards.")
 
     print("Writing output...")
-    df.to_csv(args.output, index=False)
+    states_df.to_csv(args.output, index=False)
 
     print("Done.")
 
