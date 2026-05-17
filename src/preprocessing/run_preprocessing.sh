@@ -74,6 +74,7 @@ python -m src.preprocessing.05_build_sepsis_cohort \
     --demog data/intermediates/demog.csv \
     --mask data/intermediates/patient_states/mask.csv \
     --delta data/intermediates/patient_states/delta.csv \
+    --delta-fresh data/intermediates/patient_states/delta_fresh.csv \
     --qstime data/intermediates/patient_states/qstime.csv \
     --output-dir data/final_cohort \
     --keep-multiple-icu-stays
@@ -87,7 +88,10 @@ echo "=============================="
 python -m src.preprocessing.06_build_reward \
     data/final_cohort/patient_states_filtered.csv \
     data/final_cohort/patient_states_with_reward.csv \
-    --outcome-file data/final_cohort/sepsis_cohort.csv
+    --actions data/final_cohort/actions_filtered.csv \
+    --delta-fresh data/final_cohort/delta_fresh_filtered.csv \
+    --outcome-file data/final_cohort/sepsis_cohort.csv \
+    --action-bin-config-out data/final_cohort/medr_action_bin_config.pkl
 fi
 
 if run_step 7; then
@@ -101,7 +105,8 @@ python -m src.preprocessing.07_build_meddreamer_episodes \
     --mask data/final_cohort/mask_filtered.csv \
     --delta data/final_cohort/delta_filtered.csv \
     --cohort data/final_cohort/sepsis_cohort.csv \
-    --output data/meddreamer_dataset
+    --output data/meddreamer_dataset \
+    --action-bin-config data/final_cohort/medr_action_bin_config.pkl
 fi
 
 if run_step 8; then
