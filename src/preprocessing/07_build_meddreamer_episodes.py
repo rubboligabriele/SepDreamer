@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+import pickle
 
 from src.preprocessing.utils import (
     load_csv,
@@ -270,6 +271,12 @@ def main():
     parser.add_argument("--outcome-col", type=str, default=C_MORTA_90, help="Outcome column name in states file")
     parser.add_argument("--action-cols", type=str, default=None, help="Comma-separated action columns from actions file")
     parser.add_argument("--num-action-bins", type=int, default=5, help="Per-dimension action bins; 5 -> 25 total actions")
+    parser.add_argument(
+        "--action-bin-config",
+        type=str,
+        default=None,
+        help="Path to action bin config saved during reward computation"
+    )
     args = parser.parse_args()
 
     dataset_name = "mimic"
@@ -370,10 +377,6 @@ def main():
         axis=1,
     )
 
-    print("Fitting action bins on all cohort actions ...")
-
-    print("Fitting action bins on all cohort actions ...")
-
     print("action_cols =", action_cols)
     print(actions_df[action_cols].describe())
 
@@ -383,11 +386,34 @@ def main():
     print("negative input_step rows =", (actions_df[action_cols[0]] < 0).sum())
     print("negative max_dose_vaso rows =", (actions_df[action_cols[1]] < 0).sum())
 
-    all_action_ids, action_medians, action_cutoffs = fit_action_bins(
-        actions_df[action_cols[0]].astype(np.float32).fillna(0.0).values,
-        actions_df[action_cols[1]].astype(np.float32).fillna(0.0).values,
-        n_action_bins=args.num_action_bins,
-    )
+    if args.action_bin_config is not None:
+        print("Loading action bin config from reward computation ...")
+        with open(args.action_bin_config, "rb") as f:
+            bin_config = pickle.load(f)
+
+        action_cutoffs = bin_config["action_cutoffs"]
+        action_medians = bin_config["action_medians"]
+
+        if bin_config.get("num_action_bins") != args.num_action_bins:
+            raise ValueError(
+                f"num_action_bins mismatch: reward config has "
+                f"{bin_config.get('num_action_bins')}, script has {args.num_action_bins}"
+            )
+
+        all_action_ids = transform_actions(
+            actions_df[action_cols[0]].astype(np.float32).fillna(0.0).values,
+            actions_df[action_cols[1]].astype(np.float32).fillna(0.0).values,
+            action_cutoffs,
+        )
+
+    else:
+        print("Fitting action bins on all cohort actions ...")
+        all_action_ids, action_medians, action_cutoffs = fit_action_bins(
+            actions_df[action_cols[0]].astype(np.float32).fillna(0.0).values,
+            actions_df[action_cols[1]].astype(np.float32).fillna(0.0).values,
+            n_action_bins=args.num_action_bins,
+        )
+
     print(f"Total discrete actions: {num_actions}")
     print(f"Unique action ids found: {sorted(np.unique(all_action_ids).tolist())}")
 
