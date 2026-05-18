@@ -56,13 +56,12 @@ defaults:
   cont_head:
     {layers: 2, dist: 'onehot', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
   behavior_model:
-    layers: 2
-    dist: 'onehot'
-    unimix_ratio: 0.0
+    type: 'lstm'
+    hidden_size: 16
+    num_layers: 1
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
-    outscale: 1.0
   dyn_scale: 0.5
   rep_scale: 0.1
   kl_free: 3.0
@@ -96,23 +95,29 @@ eval-wm:
 behavior:
   mode: 'behavior'
   epochs: 10000
-  eval_every: 100
-  log_every: 100
-  save_every: 500
-  training: True
-  device: 'cuda'
-
-  task: 'sepsis'
-  dataset: 'mimic'
-  num_features: 40
-  num_actions: 25
-
   batch_size: 64
   train_batch_length: 50
 
   behavior_model:
+    type: 'lstm'
     hidden_size: 16
+    num_layers: 1
     lr: 1e-4
+    eps: 1e-8
+    grad_clip: 100.0
+
+
+behavior-medr:
+  mode: 'behavior'
+  epochs: 100
+  batch_size: 256
+  train_batch_length: 50
+
+  behavior_model:
+    type: 'mlp'
+    hidden_size: 32
+    num_layers: 3
+    lr: 5e-4
     eps: 1e-8
     grad_clip: 100.0
 
