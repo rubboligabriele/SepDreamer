@@ -952,19 +952,37 @@ class BehaviorPolicy(nn.Module):
             input_dim = config.dyn_stoch + config.dyn_deter
 
         bp = config.behavior_model
+        self.policy_type = bp.get("type", "lstm")
+
         hidden_size = bp.get("hidden_size", 16)
         num_layers = bp.get("num_layers", 1)
 
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
+        if self.policy_type == "lstm":
+            self.hidden_size = hidden_size
+            self.num_layers = num_layers
 
-        self.lstm = nn.LSTM(
-            input_size=input_dim,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-        )
-        self.head = nn.Linear(hidden_size, config.num_actions)
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+            )
+            self.head = nn.Linear(hidden_size, config.num_actions)
+
+        elif self.policy_type == "mlp":
+            layers = []
+            in_dim = input_dim
+
+            for _ in range(num_layers):
+                layers.append(nn.Linear(in_dim, hidden_size))
+                layers.append(nn.ReLU())
+                in_dim = hidden_size
+
+            layers.append(nn.Linear(hidden_size, config.num_actions))
+            self.net = nn.Sequential(*layers)
+
+        else:
+            raise ValueError(f"Unknown behavior_model.type: {self.policy_type}")
 
         self._opt = tools.Optimizer(
             "behavior",
@@ -984,44 +1002,60 @@ class BehaviorPolicy(nn.Module):
     def forward(self, feat, is_first=None):
         """
         feat: [B, T, D]
-        is_first: [B, T] boolean/float, True where a new episode starts at this state
+        returns distribution over actions for each timestep.
         """
-        B, T, _ = feat.shape
-        device = feat.device
 
-        if is_first is None:
-            h, _ = self.lstm(feat)
+        if self.policy_type == "mlp":
+            B, T, D = feat.shape
+            x = feat.reshape(B * T, D)
+            logits = self.net(x)
+            logits = logits.reshape(B, T, -1)
+            return tools.OneHotDist(logits)
+
+        if self.policy_type == "lstm":
+            B, T, _ = feat.shape
+            device = feat.device
+
+            if is_first is None:
+                h, _ = self.lstm(feat)
+                logits = self.head(h)
+                return tools.OneHotDist(logits)
+
+            hx, cx = self._init_hidden(B, device)
+            outputs = []
+
+            for t in range(T):
+                reset_mask = is_first[:, t].bool()
+
+                if reset_mask.any():
+                    hx = hx.clone()
+                    cx = cx.clone()
+                    hx[:, reset_mask] = 0.0
+                    cx[:, reset_mask] = 0.0
+
+                out_t, (hx, cx) = self.lstm(feat[:, t:t + 1, :], (hx, cx))
+                outputs.append(out_t)
+
+            h = torch.cat(outputs, dim=1)
             logits = self.head(h)
             return tools.OneHotDist(logits)
 
-        hx, cx = self._init_hidden(B, device)
-        outputs = []
-
-        for t in range(T):
-            reset_mask = is_first[:, t].bool()  # [B]
-            if reset_mask.any():
-                hx = hx.clone()
-                cx = cx.clone()
-                hx[:, reset_mask] = 0.0
-                cx[:, reset_mask] = 0.0
-
-            out_t, (hx, cx) = self.lstm(feat[:, t:t+1, :], (hx, cx))
-            outputs.append(out_t)
-
-        h = torch.cat(outputs, dim=1)  # [B, T, H]
-        logits = self.head(h)
-        return tools.OneHotDist(logits)
+        raise ValueError(f"Unknown behavior_model.type: {self.policy_type}")
 
     def train_batch(self, feat, action_onehot, is_first):
         self.train()
 
         # Learn pi_b(a_{t+1} | s_t)
-        feat_input = feat[:, :-1]               # s_t
-        action_target = action_onehot[:, 1:]    # a_{t+1}
-        is_first_input = is_first[:, :-1]       # start flag for s_t
+        feat_input = feat[:, :-1]
+        action_target = action_onehot[:, 1:]
+        is_first_input = is_first[:, :-1]
 
         with tools.RequiresGrad(self):
-            dist = self(feat_input, is_first_input)
+            if self.policy_type == "lstm":
+                dist = self(feat_input, is_first_input)
+            else:
+                dist = self(feat_input)
+
             loss = -dist.log_prob(action_target).mean()
             metrics = self._opt(loss, self.parameters(), retain_graph=False)
 
@@ -1036,4 +1070,6 @@ class BehaviorPolicy(nn.Module):
         metrics["behavior_acc"] = to_np(accuracy)
         metrics["behavior_avg_p"] = to_np(p_clin)
         metrics["behavior_entropy"] = to_np(entropy)
+        metrics["behavior_type"] = self.policy_type
+
         return metrics
