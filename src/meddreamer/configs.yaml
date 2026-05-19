@@ -8,8 +8,8 @@ defaults:
   seed: 0
   deterministic_run: False
   epochs: 10000
-  eval_every: 100
-  log_every: 100
+  eval_every: 1000
+  log_every: 1000
   save_every: 1000
   device: 'cuda'
   precision: 32
