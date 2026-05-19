@@ -151,7 +151,7 @@ p1-sepsis:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'onehot', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
   imag_horizon: 15
   imag_time: 10
   task: 'sepsis'
