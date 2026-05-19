@@ -37,7 +37,7 @@ defaults:
   act: 'SiLU'
   norm: True
   terminal_reward_loss_weight: 0.0
-  terminal_cont_loss_weight: 0.0
+  terminal_cont_loss_weight: 100.0
   terminal_reward_to_pm1: False
   terminal_reward_only: False
 
