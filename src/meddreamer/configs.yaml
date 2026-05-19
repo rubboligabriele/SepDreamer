@@ -54,7 +54,7 @@ defaults:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'onehot', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
   behavior_model:
     type: 'lstm'
     hidden_size: 16

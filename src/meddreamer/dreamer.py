@@ -305,6 +305,24 @@ class Dreamer(nn.Module):
         )
         fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
 
+        print("\n[MORTALITY ESTIMATION DEBUG]", flush=True)
+        print(
+            "phys_episode_returns min/mean/max:",
+            float(phys_episode_returns.min()),
+            float(phys_episode_returns.mean()),
+            float(phys_episode_returns.max()),
+            flush=True,
+        )
+        print(
+            "ai_episode_returns min/mean/max:",
+            float(ai_episode_returns.min()),
+            float(ai_episode_returns.mean()),
+            float(ai_episode_returns.max()),
+            flush=True,
+        )
+        print("bin_centers:", bin_centers.tolist(), flush=True)
+        print("smoothed mortality:", smoothed.tolist(), flush=True)
+
         ai_mortality, ai_std = tools.calculate_estimated_mortality(
             ai_episode_returns, bin_centers, smoothed, smoothed_sem
         )
@@ -1093,7 +1111,10 @@ class Dreamer(nn.Module):
                 action_tgt = data["action"][:, 1:]
                 is_first_in = data["is_first"][:, :-1]
 
-                dist = self._behavior_policy(feat_in, is_first_in)
+                if self._behavior_policy.policy_type == "lstm":
+                    dist = self._behavior_policy(feat_in, is_first_in)
+                else:
+                    dist = self._behavior_policy(feat_in)
 
                 loss = -dist.log_prob(action_tgt)
                 total_loss += loss.sum().item()
@@ -1151,14 +1172,21 @@ class Dreamer(nn.Module):
             - 0.1 * (1.0 - self._wm.heads["cont"](self._wm.dynamics.get_feat(s)).mode())
             )
         elif self._config.cont_type == 'mort3':
-            def cont_penalty(cont_pred, a = 0.01, b = 0.01, c = 0.001):
-                # Penalty: died=-a, discharged=+b, ICU=-c
-                weights = torch.tensor([-a, b, -c], device=cont_pred.device)
-                return weights[cont_pred.argmax(-1)]
-            
-            reward = lambda f, s, a: (
-            self._wm.heads["reward"](self._wm.dynamics.get_feat(s)).mode() +
-            cont_penalty(self._wm.heads["cont"](self._wm.dynamics.get_feat(s)).mode()).unsqueeze(-1))
+            def cont_penalty_from_probs(cont_probs, a=0.01, b=0.01, c=0.001):
+                # classi: 0 = death, 1 = discharged/survival, 2 = still in ICU
+                weights = torch.tensor(
+                    [-a, b, -c],
+                    device=cont_probs.device,
+                    dtype=cont_probs.dtype,
+                )
+                return (cont_probs * weights).sum(dim=-1)
+
+            def reward(f, s, a):
+                feat_s = self._wm.dynamics.get_feat(s)
+                reward_pred = self._wm.heads["reward"](feat_s).mode()
+                cont_probs = self._wm.heads["cont"](feat_s).probs
+                penalty = cont_penalty_from_probs(cont_probs).unsqueeze(-1)
+                return reward_pred + penalty
 
         if use_history:
             if self._config.p1_type == "combine":
