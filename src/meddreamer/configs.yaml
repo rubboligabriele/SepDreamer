@@ -36,8 +36,8 @@ defaults:
   units: 512
   act: 'SiLU'
   norm: True
-  terminal_reward_loss_weight: 200.0
-  terminal_cont_loss_weight: 200.0
+  terminal_reward_loss_weight: 0.0
+  terminal_cont_loss_weight: 0.0
   terminal_reward_to_pm1: False
   terminal_reward_only: False
 
@@ -121,19 +121,6 @@ behavior-medr:
     eps: 1e-8
     grad_clip: 100.0
 
-ventilation:
-  mode: 'world_model' # 'policy_p1', 'policy_p2', 'world_model', 'dreamer'
-  seed: 4
-  task: 'ventilation'
-  dataset: 'eicu'
-  reward_key: 'reward'
-  cont_type: 'cont'
-  num_features: 41
-  num_actions: 18
-  train_batch_length: 50
-  imag_horizon: 15
-  imag_time: 10
-  reward_EMA: False
 
 p1-sepsis:
   mode: 'policy_p1'
@@ -174,36 +161,6 @@ p1-sepsis:
   num_actions: 25
   train_batch_length: 50
 
-p1-vent:
-  mode: 'policy_p1' # 'policy_p1', 'policy_p2', 'world_model', 'dreamer'
-  ckptepoch: 2000
-  seed: 4
-  epochs: 2000
-  eval_every: 100
-  log_every: 100
-  save_every: 1000
-  device: 'cuda'
-  cont_type: 'cont'
-  batch_size: 64
-  training: False
-  decoder:
-    {act: 'SiLU', norm: True, mlp_layers: 3, mlp_units: 32, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
-  actor:
-    {layers: 2, dist: 'onehot', entropy: 1e-4, unimix_ratio: 0.1, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 1}
-  critic:
-    {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 0.0}
-  reward_head:
-    {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
-  cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} 
-  imag_horizon: 15
-  imag_time: 10
-  task: 'ventilation'
-  dataset: 'eicu'
-  reward_key: 'reward'
-  num_features: 41
-  num_actions: 18
-  train_batch_length: 50
 
 p2-sepsis:
   mode: 'policy_p2'
@@ -239,34 +196,6 @@ p2-sepsis:
   num_features: 40
   num_actions: 25
 
-p2-vent:
-  mode: 'policy_p2' # 'policy_p1', 'policy_p2', 'world_model', 'dreamer'
-  ckptepoch: 2000
-  seed: 2
-  epochs: 2000
-  eval_every: 100
-  log_every: 100
-  save_every: 1000
-  device: 'cuda:1'
-  cont_type: 'cont'
-  batch_size: 64
-  training: False
-  decoder:
-    {act: 'SiLU', norm: True, mlp_layers: 3, mlp_units: 32, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
-  actor:
-    {layers: 2, dist: 'onehot', entropy: 1e-4, unimix_ratio: 0.2, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-5, eps: 1e-8, grad_clip: 100.0, outscale: 0.01}
-  critic:
-    {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 1e-5, eps: 1e-8, grad_clip: 100.0, outscale: 0.0}
-  reward_head:
-    {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
-  cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} 
-  task: 'ventilation'
-  dataset: 'eicu'
-  reward_key: 'reward'
-  num_features: 41
-  num_actions: 18
-  imag_horizon: 15
 
 dreamer:
   mode: 'dreamer'
