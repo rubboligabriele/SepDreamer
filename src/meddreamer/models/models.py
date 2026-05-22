@@ -1069,7 +1069,6 @@ class BehaviorPolicy(nn.Module):
         metrics["behavior_loss"] = to_np(loss)
         metrics["behavior_acc"] = to_np(accuracy)
         metrics["behavior_avg_p"] = to_np(p_clin)
-        metrics["behavior_entropy"] = to_np(entropy)
-        metrics["behavior_type"] = self.policy_type
+        metrics["behavior_entropy"] = to_np(entropy)        
 
         return metrics
