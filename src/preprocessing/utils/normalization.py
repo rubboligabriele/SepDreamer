@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pickle
 from sklearn.preprocessing import StandardScaler
-from src.preprocessing.columns import *
+from preprocessing.utils.columns import *
 
 class DataNormalization:
     def __init__(self, training_data, scaler=None):

@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from src.preprocessing.columns import *
+from preprocessing.utils.columns import *
 
 # fill-in missing ICUSTAY IDs in bacterio and abx. We will look at their subject ID
 # and find a matching ICU stay ID such that the event takes place

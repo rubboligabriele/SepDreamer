@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.preprocessing.columns import *
+from preprocessing.utils.columns import *
 
 # Constants taken from the paper "Deep Reinforcement Learning for Sepsis Treatment"
 DEFAULT_C0 = -0.025

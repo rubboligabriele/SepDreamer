@@ -3,7 +3,7 @@ import pickle
 import pandas as pd
 from typing import Any, Tuple,  cast
 import os
-from src.preprocessing.columns import *
+from preprocessing.utils.columns import *
 from typing import List, Optional
 
 def load_csv(*file_paths: str, null_icustayid: bool = False, **kwargs: Any) -> pd.DataFrame:
