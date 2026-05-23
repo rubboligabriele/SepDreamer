@@ -1,9 +1,9 @@
 import os
 import argparse
 
-from src.preprocessing.columns import *
-from src.preprocessing.utils import load_csv, fit_action_bins, transform_actions_separate, save_pickle
-from src.preprocessing.reward_medR import add_medr_reward_to_dataframe
+from preprocessing.utils.columns import *
+from preprocessing.utils.utils import load_csv, fit_action_bins, transform_actions_separate, save_pickle
+from preprocessing.reward.reward_medR import add_medr_reward_to_dataframe
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 

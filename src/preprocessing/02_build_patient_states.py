@@ -3,8 +3,8 @@ import os
 import argparse
 from tqdm import tqdm
 
-from src.preprocessing.columns import *
-from src.preprocessing.utils import load_csv
+from preprocessing.utils.columns import *
+from preprocessing.utils.utils import load_csv
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 

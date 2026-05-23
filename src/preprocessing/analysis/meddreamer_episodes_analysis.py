@@ -2,8 +2,8 @@ import os
 import argparse
 import numpy as np
 
-from src.preprocessing.utils import load_csv
-from src.preprocessing.columns import C_SUBJECT_ID, C_ICUSTAYID, C_RE_ADMISSION
+from preprocessing.utils.utils import load_csv
+from preprocessing.utils.columns import C_SUBJECT_ID, C_ICUSTAYID, C_RE_ADMISSION
 
 
 REQUIRED_KEYS = [

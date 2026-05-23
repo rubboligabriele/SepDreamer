@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pickle
 
-from src.preprocessing.utils import (
+from preprocessing.utils.utils import (
     load_csv,
     save_pickle,
     save_npz,
@@ -25,8 +25,8 @@ from src.preprocessing.utils import (
     transform_actions,
     one_hot_actions,
 )
-from src.preprocessing.columns import *
-from src.preprocessing.normalization import DataNormalization
+from preprocessing.utils.columns import *
+from preprocessing.utils.normalization import DataNormalization
 
 
 def check_mask_delta_alignment(

@@ -3,8 +3,8 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from src.preprocessing.columns import *
-from src.preprocessing.utils import load_csv
+from preprocessing.utils.columns import *
+from preprocessing.utils.utils import load_csv
 
 DEFAULT_REWARD_COL = "reward"
 

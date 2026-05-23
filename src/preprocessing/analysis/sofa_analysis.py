@@ -3,7 +3,7 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from src.preprocessing.columns import *
+from preprocessing.utils.columns import *
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 

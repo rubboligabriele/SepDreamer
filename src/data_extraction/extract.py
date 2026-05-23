@@ -8,7 +8,7 @@ from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from src.data_extraction.sql.queries import SQL_QUERY_FUNCTIONS
 
-from src.preprocessing.columns import RAW_DATA_COLUMNS, STAY_ID_OPTIONAL_DTYPE_SPEC
+from preprocessing.utils.columns import RAW_DATA_COLUMNS, STAY_ID_OPTIONAL_DTYPE_SPEC
 
 DERIVED_DATASET_NAME = "derived_data"
 ELIXHAUSER_TABLE_NAME = "elixhauser_quan"

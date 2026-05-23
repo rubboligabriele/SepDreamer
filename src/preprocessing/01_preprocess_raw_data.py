@@ -3,8 +3,8 @@ import argparse
 import pandas as pd
 from tqdm import tqdm
 
-from src.preprocessing.utils import load_csv
-from src.preprocessing.columns import *
+from preprocessing.utils.utils import load_csv
+from preprocessing.utils.columns import *
 
 tqdm.pandas()
 
