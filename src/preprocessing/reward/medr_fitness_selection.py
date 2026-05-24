@@ -1,3 +1,4 @@
+from html import parser
 import os
 import json
 import pickle
@@ -31,6 +32,8 @@ DEFAULT_CANDIDATES = [
         "action_cost_scale": 0.005,
         "fluid_cost_weight": 1.0,
         "vaso_cost_weight": 1.0,
+        "potential_diff_scale": 20.0,
+        "use_time_decay": False,
     },
     {
         "name": "paper_like",
@@ -43,6 +46,8 @@ DEFAULT_CANDIDATES = [
         "action_cost_scale": 0.02,
         "fluid_cost_weight": 1.0,
         "vaso_cost_weight": 1.0,
+        "potential_diff_scale": 20.0,
+        "use_time_decay": False,
     },
     {
         "name": "very_low_cost",
@@ -55,8 +60,13 @@ DEFAULT_CANDIDATES = [
         "action_cost_scale": 0.001,
         "fluid_cost_weight": 1.0,
         "vaso_cost_weight": 1.0,
+        "potential_diff_scale": 20.0,
+        "use_time_decay": False,
     },
 ]
+
+NORMAL_INTERVAL = (0.4, 0.6)
+NORMAL_IQR = NORMAL_INTERVAL[1] - NORMAL_INTERVAL[0]
 
 
 def safe_corr(x: np.ndarray, y: np.ndarray) -> float:
@@ -91,6 +101,21 @@ def load_episodes(episodes_dir: str) -> Dict[str, Dict[str, np.ndarray]]:
         episodes[fname[:-4]] = {k: data[k] for k in data.files}
 
     return episodes
+
+
+def subsample_episodes(
+    episodes: Dict[str, Dict[str, np.ndarray]],
+    max_episodes: int | None,
+    seed: int,
+) -> Dict[str, Dict[str, np.ndarray]]:
+    if max_episodes is None or max_episodes <= 0 or max_episodes >= len(episodes):
+        return episodes
+
+    rng = np.random.default_rng(seed)
+    keys = np.array(list(episodes.keys()))
+    chosen = rng.choice(keys, size=max_episodes, replace=False)
+
+    return {k: episodes[k] for k in chosen}
 
 
 def load_feature_cols(dataset_dir: str) -> List[str]:
@@ -229,7 +254,11 @@ def candidate_potential(
 
         base = survival_w * survival_component + confidence_w * confidence_component
 
-    decay = 0.5 ** (float(t) / half_life)
+    if bool(candidate.get("use_time_decay", False)):
+        decay = 0.5 ** (float(t) / half_life)
+    else:
+        decay = 1.0
+
     return float(np.clip(base, 0.0, 1.0) * decay)
 
 
@@ -250,6 +279,8 @@ def compute_candidate_reward_sequence(
     rewards = np.zeros(T, dtype=np.float64)
 
     # reward[t] corresponds to transition t-1 -> t.
+    # In your episode format, actions[t] is the shifted previous action,
+    # i.e. actions[t] = a_{t-1}, the action that produced state s_t.
     for t in range(1, T):
         phi_prev = candidate_potential(
             x=features[t - 1],
@@ -273,7 +304,16 @@ def compute_candidate_reward_sequence(
             n_bins=n_bins,
         )
 
-        rewards[t] = gamma * phi_cur - phi_prev - cost
+        potential_diff_scale = float(candidate.get("potential_diff_scale", 20.0))
+
+        potential_reward = potential_diff_scale * (gamma * phi_cur - phi_prev)
+
+        # Same logic as the corrected training reward:
+        # penalize intervention only when physiology did not improve.
+        if phi_cur > phi_prev:
+            cost = 0.0
+
+        rewards[t] = potential_reward - cost
 
     return rewards
 
@@ -300,8 +340,13 @@ def homeostasis_score(
             h = float(sigmoid(k * (z - 0.5)))
 
         else:
-            dist = abs(z - 0.5)
-            h = float(sigmoid(k * (0.5 - dist)))
+            lo, hi = NORMAL_INTERVAL
+
+            if lo <= z <= hi:
+                h = 1.0
+            else:
+                dist = lo - z if z < lo else z - hi
+                h = float(sigmoid(k * (0.5 - dist / NORMAL_IQR)))
 
         scores.append(h)
 
@@ -379,6 +424,7 @@ def compute_episode_fitness_terms(
         if not np.isfinite(h_prev) or not np.isfinite(h_cur):
             continue
 
+        # actions[t] is the action a_{t-1} that produced transition s_{t-1} -> s_t.
         a_mag = action_magnitude(int(actions[t]), n_bins=n_bins)
         e_t = h_cur - h_prev - alpha * a_mag
         efficiencies.append(e_t)
@@ -415,10 +461,10 @@ def evaluate_candidate_fitness(
             feature_indices=feature_indices,
             candidate=candidate,
             n_bins=n_bins,
-            gamma=gamma,
-            sofa_eps=sofa_eps,
-            alpha=alpha,
-            k_homeostasis=k_homeostasis,
+            gamma=float(candidate.get("gamma", gamma)),
+            sofa_eps=float(candidate.get("jsurv_epsilon", sofa_eps)),
+            alpha=float(candidate.get("jcomp_alpha", alpha)),
+            k_homeostasis=float(candidate.get("jcomp_k", k_homeostasis)),
         )
 
         R_vals.append(R)
@@ -522,12 +568,21 @@ def main():
     parser.add_argument("--sofa-eps", type=float, default=2.0)
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--k-homeostasis", type=float, default=10.0)
+    parser.add_argument("--max-episodes", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
 
     print("Loading episodes...")
     episodes = load_episodes(args.episodes_dir)
     print(f"Loaded episodes: {len(episodes)}")
+
+    episodes = subsample_episodes(
+        episodes=episodes,
+        max_episodes=args.max_episodes,
+        seed=args.seed,
+    )
+    print(f"Using episodes: {len(episodes)}")
 
     print("\nLoading feature columns...")
     feature_cols = load_feature_cols(args.dataset_dir)

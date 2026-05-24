@@ -33,7 +33,7 @@ SURVIVAL_CONFIG = {
     "sofa_24hours": {
         "type": "directional_decay",
         "direction": "low",
-        "k": 2.3,
+        "k": 2.3 * 1.25,
     },
     "baseexcess": {
         "type": "bell",
@@ -43,13 +43,13 @@ SURVIVAL_CONFIG = {
     "lactate": {
         "type": "decay_lower",
         "target": normalize_raw(1.6, *MEDR_RAW_RANGES["lactate"]),
-        "sigma": 0.05,
+        "sigma": 0.05 / 1.25,
     },
     "urineoutput": {
         "type": "directional_decay",
         "direction": "high",
         "threshold": normalize_raw(40.0, *MEDR_RAW_RANGES["urineoutput"]),
-        "k": 5.0,
+        "k": 5.0 * 1.25,
     },
     "mbp": {
         "type": "bell",
@@ -64,24 +64,24 @@ SURVIVAL_CONFIG = {
 }
 
 CONFIDENCE_TAU = {
-    "sofa_24hours": 6.0,
-    "baseexcess": 6.0,
-    "lactate": 6.0,
-    "urineoutput": 6.0,
-    "mbp": 6.0,
-    "heartrate": 6.0,
+    "sofa_24hours": 24.0,
+    "baseexcess": 24.0,
+    "lactate": 24.0,
+    "urineoutput": 24.0,
+    "mbp": 24.0,
+    "heartrate": 24.0,
 }
 
 MAX_DOSE_LEVEL = 4
 
 # Important changed values
-ACTION_COST_SCALE = 0.02
+ACTION_COST_SCALE = 0.05
 POTENTIAL_DIFF_SCALE = 20.0
 USE_TIME_DECAY = False
 
 COMPONENT_WEIGHTS = {
-    "survival": 0.7,
-    "confidence": 0.3,
+    "survival": 0.8,
+    "confidence": 0.2,
 }
 
 
