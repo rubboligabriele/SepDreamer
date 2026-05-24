@@ -80,9 +80,8 @@ POTENTIAL_DIFF_SCALE = 20.0
 USE_TIME_DECAY = False
 
 COMPONENT_WEIGHTS = {
-    "survival": 1 / 3,
-    "confidence": 1 / 3,
-    "competence": 1 / 3,
+    "survival": 0.7,
+    "confidence": 0.3,
 }
 
 
@@ -212,6 +211,8 @@ def add_medr_reward_to_dataframe(
 
             prev_delta = delta_lookup.loc[prev_key]
             cur_delta = delta_lookup.loc[cur_key]
+            # This is the outgoing clinical action a_t that caused transition s_t -> s_{t+1}.
+            # Later, episode construction shifts actions right, so episode action[t] becomes a_{t-1}.
             action_row = action_lookup.loc[prev_key]
 
             s = build_medr_state(prev_row, prev_delta)
@@ -351,14 +352,11 @@ def potential_function(state, t):
     if len(confidence_weights) > 0:
         confidence_component = sum(confidence_weights) / len(confidence_weights)
     else:
-        confidence_component = 0.0
-
-    competence_component = 1.0
+        confidence_component = 0.0    
 
     base_potential = (
         COMPONENT_WEIGHTS["survival"] * survival_component
         + COMPONENT_WEIGHTS["confidence"] * confidence_component
-        + COMPONENT_WEIGHTS["competence"] * competence_component
     )
 
     base_potential = max(0.0, min(1.0, base_potential))
@@ -375,9 +373,5 @@ def reward_function(s, t, s_next, t_next, a, gamma=0.99):
     )
 
     action_cost = compute_competence_cost(a)
-
-    # Penalize intervention only when physiology is not improving.
-    if phi_next > phi_now:
-        action_cost = 0.0
 
     return potential_reward - action_cost
