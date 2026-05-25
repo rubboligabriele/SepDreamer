@@ -1,3 +1,11 @@
+"""
+python -m src.preprocessing.analysis.debug_action0_collapse \
+  --episodes-dir data/meddreamer_dataset/mimic/episodes \
+  --num-actions 25 \
+  --num-bins 5 \
+  --top-k 25
+"""
+
 import os
 import argparse
 import numpy as np
