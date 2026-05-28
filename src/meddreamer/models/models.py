@@ -456,6 +456,7 @@ class ImagBehavior(nn.Module):
             # next cont      : c_{t+1}  -> cont[1:]
 
             feat_real = feat[:-1]                # (T-1, B, D) current real states s_t
+            n_real = feat_real.shape[0]
             action_real = action[1:]             # (T-1, B, A) next real actions a_{t+1}
             reward_real = reward_real_full[1:]   # (T-1, B, 1) next real rewards r_{t+1}
             if self._config.cont_type == "mort3":
@@ -523,6 +524,7 @@ class ImagBehavior(nn.Module):
                     target,
                     weights,
                     base,
+                    n_real=n_real,
                 )
 
                 actor_loss -= self._config.actor["entropy"] * actor_ent[..., None]
@@ -896,6 +898,7 @@ class ImagBehavior(nn.Module):
         target,
         weights,
         base,
+        n_real=None,
     ):
         metrics = {}
         policy = self.actor(feat_hybrid.detach())
@@ -930,6 +933,61 @@ class ImagBehavior(nn.Module):
             raise NotImplementedError(self._config.imag_gradient)
 
         actor_loss = -weights * actor_target
+
+        logp = policy.log_prob(action_hybrid)
+        probs = policy.probs
+        argmax_actions = probs.argmax(dim=-1)
+
+        metrics["adv_mean"] = to_np(adv.mean())
+        metrics["adv_std"] = to_np(adv.std())
+        metrics["adv_min"] = to_np(adv.min())
+        metrics["adv_max"] = to_np(adv.max())
+        metrics["adv_pos_frac"] = to_np((adv > 0).float().mean())
+        metrics["adv_neg_frac"] = to_np((adv < 0).float().mean())
+        metrics["adv_abs_mean"] = to_np(adv.abs().mean())
+
+        metrics["target_mean"] = to_np(target.mean())
+        metrics["base_mean"] = to_np(base.mean())
+        metrics["target_minus_base_mean"] = to_np((target - base).mean())
+
+        metrics["logp_mean"] = to_np(logp.mean())
+        metrics["logp_std"] = to_np(logp.std())
+
+        metrics["pi_max_mean"] = to_np(probs.max(dim=-1).values.mean())
+        metrics["pi_min_mean"] = to_np(probs.min(dim=-1).values.mean())
+        metrics["pi_entropy_mean"] = to_np(policy.entropy().mean())
+
+        counts = torch.bincount(
+            argmax_actions.reshape(-1),
+            minlength=self._config.num_actions,
+        ).float()
+        metrics["pi_argmax_frac"] = to_np(counts.max() / counts.sum())
+        metrics["pi_argmax_action"] = to_np(torch.argmax(counts))
+
+        if n_real is not None:
+            adv_real = adv[:n_real]
+            adv_imag = adv[n_real:]
+
+            logp_real = logp[:n_real]
+            logp_imag = logp[n_real:]
+
+            probs_real = probs[:n_real]
+            probs_imag = probs[n_real:]
+
+            metrics["adv_real_mean"] = to_np(adv_real.mean())
+            metrics["adv_real_pos_frac"] = to_np((adv_real > 0).float().mean())
+            metrics["adv_imag_mean"] = to_np(adv_imag.mean())
+            metrics["adv_imag_pos_frac"] = to_np((adv_imag > 0).float().mean())
+
+            metrics["logp_real_mean"] = to_np(logp_real.mean())
+            metrics["logp_imag_mean"] = to_np(logp_imag.mean())
+
+            metrics["pi_max_real_mean"] = to_np(probs_real.max(dim=-1).values.mean())
+            metrics["pi_max_imag_mean"] = to_np(probs_imag.max(dim=-1).values.mean())
+
+            metrics["entropy_real_mean"] = to_np(policy.entropy()[:n_real].mean())
+            metrics["entropy_imag_mean"] = to_np(policy.entropy()[n_real:].mean())
+
         return actor_loss, metrics
 
     def _update_slow_target(self):
