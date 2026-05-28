@@ -32,4 +32,4 @@ wheels/
 *.out
 
 # analysis files
-/analysis*
+/*analysis*
