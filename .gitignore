@@ -33,3 +33,6 @@ wheels/
 
 # analysis files
 /*analysis*
+
+# Private progress file
+sepDreamer_progress.md
