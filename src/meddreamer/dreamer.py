@@ -402,6 +402,10 @@ class Dreamer(nn.Module):
         true_reward_death_terminals = []
         true_reward_survival_terminals = []
 
+        reward_action_range_list = []
+        reward_action_std_list = []
+        reward_action_best_list = []
+
         # -------------------------
         # Accumulator cont head
         # -------------------------
@@ -517,6 +521,40 @@ class Dreamer(nn.Module):
 
                 feat_post = self._wm.dynamics.get_feat(states)
                 feat_prior = self._wm.dynamics.get_feat(prior)
+
+                # -------------------------
+                # Reward sensitivity to action
+                # -------------------------
+                state_probe = {k: v[:, -1] for k, v in states.items()}  # stato reale t=4
+
+                rewards_by_action = []
+
+                for a in range(self._config.num_actions):
+                    action_a = torch.zeros(
+                        (1, self._config.num_actions),
+                        device=self._config.device,
+                        dtype=torch.float32,
+                    )
+                    action_a[:, a] = 1.0
+
+                    next_state_a = self._wm.dynamics.img_step(state_probe, action_a, sample=False)
+                    feat_a = self._wm.dynamics.get_feat(next_state_a)
+                    reward_a = self._wm.heads["reward"](feat_a).mode()
+
+                    rewards_by_action.append(float(reward_a.squeeze().item()))
+
+                rewards_by_action = np.array(rewards_by_action, dtype=np.float32)
+
+                reward_action_range_list.append(float(rewards_by_action.max() - rewards_by_action.min()))
+                reward_action_std_list.append(float(rewards_by_action.std()))
+                reward_action_best_list.append(int(rewards_by_action.argmax()))
+
+                if debug_now:
+                    print("\n[REWARD BY ACTION DEBUG]")
+                    print("rewards_by_action:", np.round(rewards_by_action, 4).tolist())
+                    print("best_action:", int(rewards_by_action.argmax()))
+                    print("range:", float(rewards_by_action.max() - rewards_by_action.min()))
+                    print("std:", float(rewards_by_action.std()))
 
                 # -------------------------
                 # Heads
@@ -753,7 +791,19 @@ class Dreamer(nn.Module):
             "wm_return_gt_10_frac": float((phys_episode_returns > 10).mean()),
             "wm_return_lt_minus10_frac": float((phys_episode_returns < -10).mean()),
             "true_mortality": float(mortalities.mean()),
+            "reward_action_range_mean": float(np.mean(reward_action_range_list)),
+            "reward_action_range_std": float(np.std(reward_action_range_list)),
+            "reward_action_std_mean": float(np.mean(reward_action_std_list)),
+            "reward_action_std_std": float(np.std(reward_action_std_list)),
         }
+
+        best_action_counts = np.bincount(
+            np.array(reward_action_best_list, dtype=np.int64),
+            minlength=self._config.num_actions,
+        )
+
+        for a, count in enumerate(best_action_counts):
+            wm_metrics[f"reward_best_action_{a}_frac"] = float(count / max(len(reward_action_best_list), 1))
 
         if len(pred_reward_death_terminals) > 0:
             wm_metrics["pred_reward_death_terminal_mean"] = float(np.mean(pred_reward_death_terminals))
