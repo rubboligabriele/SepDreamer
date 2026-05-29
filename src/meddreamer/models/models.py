@@ -527,8 +527,8 @@ class ImagBehavior(nn.Module):
                     n_real=n_real,
                 )
 
-                actor_loss -= self._config.actor["entropy"] * actor_ent[..., None]
-                actor_loss = actor_loss.mean()
+                entropy_loss = -self._config.actor["entropy"] * actor_ent.mean()
+                actor_loss = actor_loss + entropy_loss
                 metrics.update(mets)
 
             with tools.RequiresGrad(self.value):
@@ -933,6 +933,22 @@ class ImagBehavior(nn.Module):
             raise NotImplementedError(self._config.imag_gradient)
 
         actor_loss = -weights * actor_target
+
+        if n_real is not None:
+            real_loss = actor_loss[:n_real].mean()
+            imag_loss = actor_loss[n_real:].mean()
+
+            real_weight = getattr(self._config, "real_loss_weight", 1.0)
+            imag_weight = getattr(self._config, "imag_loss_weight", 0.2)
+
+            actor_loss = real_weight * real_loss + imag_weight * imag_loss
+
+            metrics["actor_loss_real"] = to_np(real_loss)
+            metrics["actor_loss_imag"] = to_np(imag_loss)
+            metrics["real_loss_weight"] = real_weight
+            metrics["imag_loss_weight"] = imag_weight
+        else:
+            actor_loss = actor_loss.mean()
 
         logp = policy.log_prob(action_hybrid)
         probs = policy.probs
