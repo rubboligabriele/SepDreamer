@@ -223,10 +223,14 @@ class Dreamer(nn.Module):
                 state_ai = {k: v[:, 4] for k, v in full_states.items()}
                 ai_episode_return = 0.0
                 actions = []
+                ai_probs = []
 
                 for t in range(T_roll):
                     feat_ai = self._wm.dynamics.get_feat(state_ai)
                     ai_dist = self._task_behavior.actor(feat_ai.detach())
+
+                    ai_probs.append(to_np(ai_dist.probs.squeeze(0)))
+
                     action = ai_dist.sample()
                     actions.append(to_np(action))
 
@@ -239,6 +243,13 @@ class Dreamer(nn.Module):
 
                 actions = np.stack(actions, axis=1)
                 ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
+
+                ai_probs_np = np.stack(ai_probs, axis=0)
+                if debug_now:
+                    print("\n[EVAL AI POLICY PROBS DEBUG]")
+                    print("mean_probs:", np.round(ai_probs_np.mean(axis=0), 4).tolist())
+                    print("mean_probs_max:", float(ai_probs_np.mean(axis=0).max()))
+                    print("mean_probs_argmax:", int(ai_probs_np.mean(axis=0).argmax()))
                 phys_actions.append(np.argmax(to_np(phys_action[0, 5:]), axis=-1))
 
                 if "sofa" in data:
@@ -1026,10 +1037,14 @@ class Dreamer(nn.Module):
                     state_ai = {k: v[:, 4] for k, v in full_states.items()}
                     ai_episode_return = 0.0
                     actions = []
+                    ai_probs = []
 
                     for t in range(T_roll):
                         feat_ai = self._wm.dynamics.get_feat(state_ai)
                         ai_dist = self._task_behavior.actor(feat_ai.detach())
+
+                        ai_probs.append(to_np(ai_dist.probs.squeeze(0)))
+
                         action = ai_dist.sample()
                         actions.append(to_np(action))
 
@@ -1042,6 +1057,13 @@ class Dreamer(nn.Module):
 
                     actions = np.stack(actions, axis=1)
                     ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
+
+                    ai_probs_np = np.stack(ai_probs, axis=0)
+                    if debug_now:
+                        print("\n[EVAL AI POLICY PROBS DEBUG]")
+                        print("mean_probs:", np.round(ai_probs_np.mean(axis=0), 4).tolist())
+                        print("mean_probs_max:", float(ai_probs_np.mean(axis=0).max()))
+                        print("mean_probs_argmax:", int(ai_probs_np.mean(axis=0).argmax()))
                     ai_episode_returns.append(ai_episode_return)
 
                     traj_ope = tools.compute_ope_trajectory(
