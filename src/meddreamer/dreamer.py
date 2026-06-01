@@ -64,6 +64,7 @@ class Dreamer(nn.Module):
         valid_episodes = 0
         features_dict = {"ori_feat": [], "recon_feat": []}
         ope_trajs = []
+        ai_sample_counts = np.zeros(self._config.num_actions, dtype=np.int64)
 
         self._wm.eval()
         self._task_behavior.eval()
@@ -242,7 +243,14 @@ class Dreamer(nn.Module):
                     ai_episode_return += float(to_np(reward_ai.squeeze()))
 
                 actions = np.stack(actions, axis=1)
-                ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
+
+                ai_actions_ep = np.argmax(np.squeeze(actions, axis=0), axis=-1)
+                ai_actions.append(ai_actions_ep)
+
+                ai_sample_counts += np.bincount(
+                    ai_actions_ep,
+                    minlength=self._config.num_actions,
+                )
 
                 ai_probs_np = np.stack(ai_probs, axis=0)
                 if debug_now:
@@ -297,6 +305,15 @@ class Dreamer(nn.Module):
         value_estimates = np.array(value_estimates, dtype=np.float32)
         ai_actions = np.concatenate(ai_actions, axis=0)
         phys_actions = np.concatenate(phys_actions, axis=0)
+
+        print("\n[GLOBAL AI SAMPLE ACTION COUNTS]", flush=True)
+        print(ai_sample_counts.tolist(), flush=True)
+        print("sample_argmax:", int(ai_sample_counts.argmax()), flush=True)
+        print(
+            "sample_argmax_frac:",
+            float(ai_sample_counts.max() / max(ai_sample_counts.sum(), 1)),
+            flush=True,
+        )
 
         if len(sofas) > 0:
             sofas = np.concatenate(sofas, axis=0)
@@ -888,6 +905,7 @@ class Dreamer(nn.Module):
         ai_actions = []
         mortalities = []
         ope_trajs = []
+        ai_sample_counts = np.zeros(self._config.num_actions, dtype=np.int64)
 
         self._wm.eval()
         self._task_behavior.eval()
@@ -1056,7 +1074,14 @@ class Dreamer(nn.Module):
                         ai_episode_return += float(to_np(reward_ai.squeeze()))
 
                     actions = np.stack(actions, axis=1)
-                    ai_actions.append(np.argmax(np.squeeze(actions, axis=0), axis=-1))
+
+                    ai_actions_ep = np.argmax(np.squeeze(actions, axis=0), axis=-1)
+                    ai_actions.append(ai_actions_ep)
+
+                    ai_sample_counts += np.bincount(
+                        ai_actions_ep,
+                        minlength=self._config.num_actions,
+                    )
 
                     ai_probs_np = np.stack(ai_probs, axis=0)
                     if debug_now:
@@ -1114,6 +1139,15 @@ class Dreamer(nn.Module):
             value_estimates = np.array(value_estimates, dtype=np.float32)
             mortalities = np.array(mortalities, dtype=np.float32)
             ai_actions = np.concatenate(ai_actions, axis=0)
+
+            print("\n[GLOBAL AI SAMPLE ACTION COUNTS]", flush=True)
+            print(ai_sample_counts.tolist(), flush=True)
+            print("sample_argmax:", int(ai_sample_counts.argmax()), flush=True)
+            print(
+                "sample_argmax_frac:",
+                float(ai_sample_counts.max() / max(ai_sample_counts.sum(), 1)),
+                flush=True,
+            )
 
             fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(
                 phys_episode_returns, mortalities

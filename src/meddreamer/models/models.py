@@ -518,6 +518,18 @@ class ImagBehavior(nn.Module):
                 print("argmax_frac:", (counts.max() / counts.sum()).item(), flush=True)
                 print("action_argmax_counts:", counts.cpu().numpy().astype(int).tolist(), flush=True)
 
+                sample_dbg = policy_dbg.sample()
+                sample_idx = sample_dbg.argmax(dim=-1)
+
+                sample_counts = torch.bincount(
+                    sample_idx.reshape(-1),
+                    minlength=self._config.num_actions,
+                ).float()
+
+                print("sample_action:", torch.argmax(sample_counts).item(), flush=True)
+                print("sample_frac:", (sample_counts.max() / sample_counts.sum()).item(), flush=True)
+                print("sample_counts:", sample_counts.cpu().numpy().astype(int).tolist(), flush=True)
+
             # Convert continuation to scalar discount
             if self._config.cont_type == "mort3":
                 discount_hybrid = self._config.discount * cont_hybrid[..., 2, None] \
@@ -535,6 +547,40 @@ class ImagBehavior(nn.Module):
                     discount_hybrid,
                     bootstrap_feat=imag_next_feat[-1].detach(),
                 )
+
+                target_tensor = torch.stack(target, dim=1)
+
+                print("\n[TARGET DEBUG]", flush=True)
+                print("base mean:", base.mean().item(), flush=True)
+                print("target mean:", target_tensor.mean().item(), flush=True)
+                print("adv mean:", (target_tensor - base).mean().item(), flush=True)
+                print("base min/max:", base.min().item(), base.max().item(), flush=True)
+                print("target min/max:", target_tensor.min().item(), target_tensor.max().item(), flush=True)
+
+                print("\n[REAL VS IMAG]", flush=True)
+                print("real target mean:", target_tensor[:n_real].mean().item(), flush=True)
+                print("imag target mean:", target_tensor[n_real:].mean().item(), flush=True)
+                print("real value mean:", base[:n_real].mean().item(), flush=True)
+                print("imag value mean:", base[n_real:].mean().item(), flush=True)
+                print("real adv mean:", (target_tensor[:n_real] - base[:n_real]).mean().item(), flush=True)
+                print("imag adv mean:", (target_tensor[n_real:] - base[n_real:]).mean().item(), flush=True)
+
+                print("\n[REWARD/DISCOUNT DEBUG]", flush=True)
+                print("reward real mean:", reward_hybrid[:n_real].mean().item(), flush=True)
+                print("reward imag mean:", reward_hybrid[n_real:].mean().item(), flush=True)
+                print("discount real mean:", discount_hybrid[:n_real].mean().item(), flush=True)
+                print("discount imag mean:", discount_hybrid[n_real:].mean().item(), flush=True)
+                print("discount imag min/max:", discount_hybrid[n_real:].min().item(), discount_hybrid[n_real:].max().item(), flush=True)
+
+                print("\n[TRAJECTORY DEBUG]", flush=True)
+                print("real length:", n_real, flush=True)
+                print("imag length:", reward_hybrid.shape[0] - n_real, flush=True)
+                print("total length:", reward_hybrid.shape[0], flush=True)
+
+                print("\n[CONTINUATION DEBUG]", flush=True)
+                print("cont imag mean:", cont_imag.mean().item(), flush=True)
+                print("cont imag min/max:", cont_imag.min().item(), cont_imag.max().item(), flush=True)
+                print("cont imag first trajectory:", cont_imag[:, 0].detach().cpu().numpy(), flush=True)
 
                 actor_loss, mets = self._compute_actor_loss_hybrid(
                     feat_hybrid,
@@ -935,16 +981,54 @@ class ImagBehavior(nn.Module):
         else:
             adv = target - base
 
+        if n_real is not None:
+            adv_real = adv[:n_real]
+            adv_imag = adv[n_real:]
+
+            adv_real_used = adv_real - adv_real.mean().detach()
+            adv_real_used = adv_real_used / (adv_real_used.std().detach() + 1e-8)
+
+            adv_imag_used = adv_imag - adv_imag.mean().detach()
+            adv_imag_used = adv_imag_used / (adv_imag_used.std().detach() + 1e-8)
+
+            adv_used = torch.cat([adv_real_used, adv_imag_used], dim=0)
+            adv_used = adv_used.clamp(-5.0, 5.0)
+        else:
+            adv_used = adv - adv.mean().detach()
+            adv_used = adv_used / (adv_used.std().detach() + 1e-8)
+            adv_used = adv_used.clamp(-5.0, 5.0)
+
+        with torch.no_grad():
+            adv_flat = adv.reshape(-1)
+            act_flat = action_hybrid.reshape(-1, self._config.num_actions)
+            act_idx = act_flat.argmax(-1)
+
+            print("\n[ADV BY ACTION DEBUG]", flush=True)
+
+            for a in range(self._config.num_actions):
+                mask = (act_idx == a)
+
+                if mask.sum() == 0:
+                    continue
+
+                print(
+                    f"action={a:02d}",
+                    f"count={mask.sum().item()}",
+                    f"adv_mean={adv_flat[mask].mean().item():.4f}",
+                    f"adv_pos_frac={(adv_flat[mask] > 0).float().mean().item():.4f}",
+                    flush=True,
+                )
+
         if self._config.imag_gradient == "dynamics":
-            actor_target = adv
+            actor_target = adv_used
 
         elif self._config.imag_gradient == "reinforce":
-            actor_target = policy.log_prob(action_hybrid)[..., None] * adv.detach()
+            actor_target = policy.log_prob(action_hybrid)[..., None] * adv_used.detach()
 
         elif self._config.imag_gradient == "both":
-            reinforce_term = policy.log_prob(action_hybrid)[..., None] * adv.detach()
+            reinforce_term = policy.log_prob(action_hybrid)[..., None] * adv_used.detach()
             mix = self._config.imag_gradient_mix
-            actor_target = mix * adv + (1 - mix) * reinforce_term
+            actor_target = mix * adv_used + (1 - mix) * reinforce_term
             metrics["imag_gradient_mix"] = mix
 
         else:
