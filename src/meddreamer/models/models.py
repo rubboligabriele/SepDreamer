@@ -500,6 +500,24 @@ class ImagBehavior(nn.Module):
             # Continuations aligned with feat_hybrid transitions
             cont_hybrid = torch.cat([cont_real, cont_imag], dim=0)
 
+            with torch.no_grad():
+                policy_dbg = self.actor(feat_hybrid.detach())
+                probs_dbg = policy_dbg.probs
+                argmax_dbg = probs_dbg.argmax(dim=-1)
+
+                counts = torch.bincount(
+                    argmax_dbg.reshape(-1),
+                    minlength=self._config.num_actions,
+                ).float()
+
+                print("\n[POLICY INIT / PRE-UPDATE DEBUG]", flush=True)
+                print("pi_max_mean:", probs_dbg.max(dim=-1).values.mean().item(), flush=True)
+                print("pi_min_mean:", probs_dbg.min(dim=-1).values.mean().item(), flush=True)
+                print("entropy_mean:", policy_dbg.entropy().mean().item(), flush=True)
+                print("argmax_action:", torch.argmax(counts).item(), flush=True)
+                print("argmax_frac:", (counts.max() / counts.sum()).item(), flush=True)
+                print("action_argmax_counts:", counts.cpu().numpy().astype(int).tolist(), flush=True)
+
             # Convert continuation to scalar discount
             if self._config.cont_type == "mort3":
                 discount_hybrid = self._config.discount * cont_hybrid[..., 2, None] \
