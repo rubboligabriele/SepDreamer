@@ -398,27 +398,18 @@ class Dreamer(nn.Module):
 
         first_debug_done = False
 
-        # -------------------------
-        # Accumulator reconstruction
-        # -------------------------
         recon_error = 0.0
         valid_episodes = 0
 
-        # -------------------------
-        # Accumulator reward
-        # -------------------------
         reward_nll_post = 0.0
         reward_nll_prior = 0.0
 
         reward_mae_post_sum = 0.0
         reward_mae_post_count = 0
-
         reward_mae_prior_sum = 0.0
         reward_mae_prior_count = 0
-
         reward_mae_terminal_sum = 0.0
         reward_mae_terminal_count = 0
-
         reward_mae_nonterminal_sum = 0.0
         reward_mae_nonterminal_count = 0
 
@@ -433,23 +424,18 @@ class Dreamer(nn.Module):
         reward_action_range_list = []
         reward_action_std_list = []
         reward_action_best_list = []
+        cont_action_best_list = []
+        reward_action0_rank_list = []
 
-        # -------------------------
-        # Accumulator cont head
-        # -------------------------
         cont_correct = 0
         cont_total = 0
-
-        # binary case: cont / mort2
         cont_pos_correct = 0
         cont_pos_total = 0
         cont_neg_correct = 0
         cont_neg_total = 0
-
         cont_prob_on_pos = []
         cont_prob_on_neg = []
 
-        # mort3 case
         cont_class_correct = {0: 0, 1: 0, 2: 0}
         cont_class_total = {0: 0, 1: 0, 2: 0}
         cont_pred_class_probs = {0: [], 1: [], 2: []}
@@ -475,10 +461,7 @@ class Dreamer(nn.Module):
                 unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
 
                 features = flatten(data["features"])
-                if self._config.fm["use_fm"]:
-                    delta = flatten(data["delta"])
-                else:
-                    delta = None
+                delta = flatten(data["delta"]) if self._config.fm["use_fm"] else None
 
                 embed = self._wm.encoder(features, delta)
                 embed = unflatten(embed)
@@ -487,10 +470,11 @@ class Dreamer(nn.Module):
                 is_first = data["is_first"].detach().clone()
 
                 debug_now = not first_debug_done
+
                 if debug_now:
-                    print(f"\n{'='*80}")
+                    print(f"\n{'=' * 80}")
                     print(f"[EVAL_WM DEBUG] FIRST STAY = {stay_id}")
-                    print(f"{'='*80}")
+                    print(f"{'=' * 80}")
 
                     max_t = min(12, phys_action.shape[1])
                     print("\n[FIRST STAY ALIGNMENT TABLE]")
@@ -524,7 +508,10 @@ class Dreamer(nn.Module):
                     self._wm.dynamics._debug_mode = False
 
                 states, _ = self._wm.dynamics.observe(
-                    embed[:, :5], phys_action[:, :5], is_first[:, :5], debug=debug_now
+                    embed[:, :5],
+                    phys_action[:, :5],
+                    is_first[:, :5],
+                    debug=debug_now,
                 )
                 self._wm.dynamics._debug_mode = False
 
@@ -550,12 +537,13 @@ class Dreamer(nn.Module):
                 feat_post = self._wm.dynamics.get_feat(states)
                 feat_prior = self._wm.dynamics.get_feat(prior)
 
-                # -------------------------
-                # Reward sensitivity to action
-                # -------------------------
-                state_probe = {k: v[:, -1] for k, v in states.items()}  # stato reale t=4
+                # -------------------------------------------------
+                # WM ACTION SENSITIVITY: one-step from real state t=4
+                # -------------------------------------------------
+                state_probe = {k: v[:, -1] for k, v in states.items()}
 
                 rewards_by_action = []
+                cont_by_action = []
 
                 for a in range(self._config.num_actions):
                     action_a = torch.zeros(
@@ -565,28 +553,74 @@ class Dreamer(nn.Module):
                     )
                     action_a[:, a] = 1.0
 
-                    next_state_a = self._wm.dynamics.img_step(state_probe, action_a, sample=False)
+                    next_state_a = self._wm.dynamics.img_step(
+                        state_probe,
+                        action_a,
+                        sample=False,
+                    )
                     feat_a = self._wm.dynamics.get_feat(next_state_a)
+
                     reward_a = self._wm.heads["reward"](feat_a).mode()
+                    cont_a = self._wm.heads["cont"](feat_a).mode()
 
                     rewards_by_action.append(float(reward_a.squeeze().item()))
+                    cont_by_action.append(float(cont_a.squeeze().item()))
 
                 rewards_by_action = np.array(rewards_by_action, dtype=np.float32)
+                cont_by_action = np.array(cont_by_action, dtype=np.float32)
 
                 reward_action_range_list.append(float(rewards_by_action.max() - rewards_by_action.min()))
                 reward_action_std_list.append(float(rewards_by_action.std()))
                 reward_action_best_list.append(int(rewards_by_action.argmax()))
+                cont_action_best_list.append(int(cont_by_action.argmax()))
+
+                rank_desc = np.argsort(-rewards_by_action)
+                action0_rank = int(np.where(rank_desc == 0)[0][0]) + 1
+                reward_action0_rank_list.append(action0_rank)
 
                 if debug_now:
-                    print("\n[REWARD BY ACTION DEBUG]")
-                    print("rewards_by_action:", np.round(rewards_by_action, 4).tolist())
-                    print("best_action:", int(rewards_by_action.argmax()))
-                    print("range:", float(rewards_by_action.max() - rewards_by_action.min()))
-                    print("std:", float(rewards_by_action.std()))
+                    print("\n[WM ONE-STEP ACTION DEBUG]")
+                    print("reward_by_action:", np.round(rewards_by_action, 4).tolist())
+                    print("cont_by_action:", np.round(cont_by_action, 4).tolist())
+                    print("best_reward_action:", int(rewards_by_action.argmax()))
+                    print("best_cont_action:", int(cont_by_action.argmax()))
+                    print("action0_reward_rank:", int(action0_rank))
+                    print("reward_range:", float(rewards_by_action.max() - rewards_by_action.min()))
+                    print("reward_std:", float(rewards_by_action.std()))
 
-                # -------------------------
+                    print("\n[WM MULTI-STEP SAME-ACTION DEBUG]")
+                    for a in range(self._config.num_actions):
+                        s = {k: v.clone() for k, v in state_probe.items()}
+                        rewards_roll = []
+                        conts_roll = []
+
+                        action_a = torch.zeros(
+                            (1, self._config.num_actions),
+                            device=self._config.device,
+                            dtype=torch.float32,
+                        )
+                        action_a[:, a] = 1.0
+
+                        for h in range(5):
+                            s = self._wm.dynamics.img_step(s, action_a, sample=False)
+                            feat_h = self._wm.dynamics.get_feat(s)
+                            r_h = self._wm.heads["reward"](feat_h).mode()
+                            c_h = self._wm.heads["cont"](feat_h).mode()
+
+                            rewards_roll.append(float(r_h.squeeze().item()))
+                            conts_roll.append(float(c_h.squeeze().item()))
+
+                        print(
+                            f"a={a:02d} "
+                            f"sum_r_5={sum(rewards_roll):8.4f} "
+                            f"mean_cont_5={np.mean(conts_roll):.4f} "
+                            f"r_seq={np.round(rewards_roll, 3).tolist()}",
+                            flush=True,
+                        )
+
+                # -------------------------------------------------
                 # Heads
-                # -------------------------
+                # -------------------------------------------------
                 reward_head_post = self._wm.heads["reward"](feat_post)
                 reward_head_prior = self._wm.heads["reward"](feat_prior)
 
@@ -599,18 +633,18 @@ class Dreamer(nn.Module):
                 recon = self._wm.heads["decoder"](feat_post)["features"].mode()
                 openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
 
-                # -------------------------
+                # -------------------------------------------------
                 # Reconstruction
-                # -------------------------
+                # -------------------------------------------------
                 model = torch.cat([recon[:, :5], openl], 1)
                 error = ((model - data["features"]) ** 2) * data["mask"]
                 recon_error += (
                     error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)
                 ).mean().item()
 
-                # -------------------------
+                # -------------------------------------------------
                 # Reward NLL
-                # -------------------------
+                # -------------------------------------------------
                 reward_nll_post += (
                     -reward_head_post.log_prob(data["reward"][:, :5])
                 ).mean().item()
@@ -619,9 +653,9 @@ class Dreamer(nn.Module):
                     -reward_head_prior.log_prob(data["reward"][:, 5:])
                 ).mean().item()
 
-                # -------------------------
+                # -------------------------------------------------
                 # Reward MAE
-                # -------------------------
+                # -------------------------------------------------
                 true_reward_post = data["reward"][:, :5]
                 true_reward_prior = data["reward"][:, 5:]
 
@@ -644,15 +678,18 @@ class Dreamer(nn.Module):
                     reward_mae_terminal_sum += torch.abs(term_pred - term_true).sum().item()
                     reward_mae_terminal_count += term_true.numel()
 
-                    sign_ok = (torch.sign(term_pred) == torch.sign(term_true)).sum().item()
-                    terminal_sign_correct += sign_ok
+                    terminal_sign_correct += (
+                        torch.sign(term_pred) == torch.sign(term_true)
+                    ).sum().item()
                     terminal_sign_total += term_true.numel()
 
                     death_mask = (
-                        data["mortality"][:, 5:].bool().unsqueeze(-1) & terminal_mask_prior
+                        data["mortality"][:, 5:].bool().unsqueeze(-1)
+                        & terminal_mask_prior
                     )
                     surv_mask = (
-                        (~data["mortality"][:, 5:].bool()).unsqueeze(-1) & terminal_mask_prior
+                        (~data["mortality"][:, 5:].bool()).unsqueeze(-1)
+                        & terminal_mask_prior
                     )
 
                     if death_mask.any():
@@ -691,12 +728,13 @@ class Dreamer(nn.Module):
                             f"uses action at t={real_t:02d} act={act_idx:02d} "
                             f"pred_reward={pred_r:8.4f} "
                             f"real_reward={real_r:8.4f} "
-                            f"is_terminal={term_flag}"
+                            f"is_terminal={term_flag}",
+                            flush=True,
                         )
 
-                # -------------------------
+                # -------------------------------------------------
                 # Cont head analysis
-                # -------------------------
+                # -------------------------------------------------
                 if self._config.cont_type in ["cont", "mort2"]:
                     cont_prob_post = cont_head_post.mean
                     cont_prob_prior = cont_head_prior.mean
@@ -713,14 +751,18 @@ class Dreamer(nn.Module):
                     neg_mask = cont_true_all == 0
 
                     if pos_mask.any():
-                        cont_pos_correct += (cont_pred_all[pos_mask] == cont_true_all[pos_mask]).sum().item()
+                        cont_pos_correct += (
+                            cont_pred_all[pos_mask] == cont_true_all[pos_mask]
+                        ).sum().item()
                         cont_pos_total += pos_mask.sum().item()
                         cont_prob_on_pos.extend(
                             cont_prob_all[pos_mask].detach().cpu().view(-1).tolist()
                         )
 
                     if neg_mask.any():
-                        cont_neg_correct += (cont_pred_all[neg_mask] == cont_true_all[neg_mask]).sum().item()
+                        cont_neg_correct += (
+                            cont_pred_all[neg_mask] == cont_true_all[neg_mask]
+                        ).sum().item()
                         cont_neg_total += neg_mask.sum().item()
                         cont_prob_on_neg.extend(
                             cont_prob_all[neg_mask].detach().cpu().view(-1).tolist()
@@ -741,21 +783,31 @@ class Dreamer(nn.Module):
                     for cls in [0, 1, 2]:
                         cls_mask = true_cls == cls
                         if cls_mask.any():
-                            cont_class_correct[cls] += (pred_cls[cls_mask] == true_cls[cls_mask]).sum().item()
+                            cont_class_correct[cls] += (
+                                pred_cls[cls_mask] == true_cls[cls_mask]
+                            ).sum().item()
                             cont_class_total[cls] += cls_mask.sum().item()
                             cont_pred_class_probs[cls].extend(
-                                cont_probs_all[..., cls][cls_mask].detach().cpu().view(-1).tolist()
+                                cont_probs_all[..., cls][cls_mask]
+                                .detach()
+                                .cpu()
+                                .view(-1)
+                                .tolist()
                             )
 
                     terminal_mask = data["is_terminal"].bool()
                     nonterminal_mask = ~terminal_mask
 
                     if terminal_mask.any():
-                        mort3_terminal_correct += (pred_cls[terminal_mask] == true_cls[terminal_mask]).sum().item()
+                        mort3_terminal_correct += (
+                            pred_cls[terminal_mask] == true_cls[terminal_mask]
+                        ).sum().item()
                         mort3_terminal_total += terminal_mask.sum().item()
 
                     if nonterminal_mask.any():
-                        mort3_nonterminal_correct += (pred_cls[nonterminal_mask] == true_cls[nonterminal_mask]).sum().item()
+                        mort3_nonterminal_correct += (
+                            pred_cls[nonterminal_mask] == true_cls[nonterminal_mask]
+                        ).sum().item()
                         mort3_nonterminal_total += nonterminal_mask.sum().item()
 
                     death_terminal_mask = terminal_mask & (true_cls == 0)
@@ -773,16 +825,10 @@ class Dreamer(nn.Module):
                         ).sum().item()
                         mort3_survival_terminal_total += survival_terminal_mask.sum().item()
 
-                # -------------------------
-                # Returns for mortality plot
-                # -------------------------
                 phys_episode_return = to_np(reward_prior.sum(dim=1).squeeze())
                 phys_episode_returns.append(phys_episode_return)
                 mortalities.append(to_np(data["mortality"][:, 0].squeeze()))
 
-                # -------------------------
-                # Recon dumps
-                # -------------------------
                 recon_feature = torch.cat([recon[:, :5], openl], 1)
                 features_dict["ori_feat"].append(to_np(data["features"]))
                 features_dict["recon_feat"].append(to_np(recon_feature))
@@ -798,7 +844,8 @@ class Dreamer(nn.Module):
         mortalities = np.array(mortalities, dtype=np.float32)
 
         fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_expected_return(
-            phys_episode_returns, mortalities
+            phys_episode_returns,
+            mortalities,
         )
         fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
 
@@ -819,19 +866,36 @@ class Dreamer(nn.Module):
             "wm_return_gt_10_frac": float((phys_episode_returns > 10).mean()),
             "wm_return_lt_minus10_frac": float((phys_episode_returns < -10).mean()),
             "true_mortality": float(mortalities.mean()),
+
             "reward_action_range_mean": float(np.mean(reward_action_range_list)),
             "reward_action_range_std": float(np.std(reward_action_range_list)),
             "reward_action_std_mean": float(np.mean(reward_action_std_list)),
             "reward_action_std_std": float(np.std(reward_action_std_list)),
+
+            "reward_action0_rank_mean": float(np.mean(reward_action0_rank_list)),
+            "reward_action0_best_frac": float(np.mean(np.array(reward_action_best_list) == 0)),
+            "cont_action0_best_frac": float(np.mean(np.array(cont_action_best_list) == 0)),
         }
 
-        best_action_counts = np.bincount(
+        reward_best_action_counts = np.bincount(
             np.array(reward_action_best_list, dtype=np.int64),
             minlength=self._config.num_actions,
         )
 
-        for a, count in enumerate(best_action_counts):
-            wm_metrics[f"reward_best_action_{a}_frac"] = float(count / max(len(reward_action_best_list), 1))
+        cont_best_action_counts = np.bincount(
+            np.array(cont_action_best_list, dtype=np.int64),
+            minlength=self._config.num_actions,
+        )
+
+        for a, count in enumerate(reward_best_action_counts):
+            wm_metrics[f"reward_best_action_{a}_frac"] = float(
+                count / max(len(reward_action_best_list), 1)
+            )
+
+        for a, count in enumerate(cont_best_action_counts):
+            wm_metrics[f"cont_best_action_{a}_frac"] = float(
+                count / max(len(cont_action_best_list), 1)
+            )
 
         if len(pred_reward_death_terminals) > 0:
             wm_metrics["pred_reward_death_terminal_mean"] = float(np.mean(pred_reward_death_terminals))
