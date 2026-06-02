@@ -113,9 +113,9 @@ def main(config):
             if config.training:
                 agent.train_wm(config.epochs)
             else:
-                for epoch in range(config.save_every, config.epochs + 1, config.save_every):
-                    tools.load_model(agent, "wm", config.ckptdir, epoch, config.device)
-                    agent.eval_wm(eval_eps, epoch)
+                epoch = config.ckptepoch
+                tools.load_model(agent, "wm", config.ckptdir, epoch, config.device)
+                agent.eval_wm(eval_eps, epoch)
 
         elif config.mode == "behavior":
             if config.training:
