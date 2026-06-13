@@ -48,13 +48,13 @@ defaults:
   decoder:
     {act: 'SiLU', norm: True, mlp_layers: 2, mlp_units: 512, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'onehot', entropy: 1e-3, unimix_ratio: 0.1, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 1}
+    {layers: 2, dist: 'onehot', entropy: 3e-3, unimix_ratio: 0.1, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 1}
   critic:
     {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 0.0}
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5} # pos_weight = (1-p_death)/p_death ≈ 0.78/0.22 ≈ 3.5
   behavior_model:
     type: 'lstm'
     hidden_size: 16
@@ -62,9 +62,9 @@ defaults:
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
-  dyn_scale: 0.5
+  dyn_scale: 1.0
   rep_scale: 0.1
-  kl_free: 3.0
+  kl_free: 1.0
   weight_decay: 1e-5
   unimix_ratio: 0.05
   initial: 'learned'
@@ -151,7 +151,7 @@ p1-sepsis:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} # 'onehot' 'binary'
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
   imag_horizon: 15
   imag_time: 5
   task: 'sepsis'
@@ -190,7 +190,7 @@ p2-sepsis:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0}
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
   imag_horizon: 15
   imag_time: 10
   task: 'sepsis'
@@ -224,7 +224,7 @@ dreamer:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} 
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
   task: 'ventilation'
   dataset: 'mimic'
   reward_key: 'ori_reward'
@@ -257,7 +257,7 @@ debug:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} 
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
   # task: 'ventilation'
   # dataset: 'eicu'
   # reward_key: 'ori_reward_short'
