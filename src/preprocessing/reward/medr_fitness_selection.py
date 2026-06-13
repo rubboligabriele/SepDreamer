@@ -308,11 +308,6 @@ def compute_candidate_reward_sequence(
 
         potential_reward = potential_diff_scale * (gamma * phi_cur - phi_prev)
 
-        # Same logic as the corrected training reward:
-        # penalize intervention only when physiology did not improve.
-        if phi_cur > phi_prev:
-            cost = 0.0
-
         rewards[t] = potential_reward - cost
 
     return rewards
