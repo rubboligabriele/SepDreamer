@@ -335,7 +335,8 @@ def build_patient_states_derived(
         if len(timesteps) == 0:
             continue
 
-        # Build one row per final timestep.
+        # Build one row per final timestep (collected per-patient for UO post-processing).
+        patient_items = []
         for i, t in enumerate(timesteps):
             item = {
                 C_BLOC: i,
@@ -391,7 +392,33 @@ def build_patient_states_derived(
                 if len(active) > 0:
                     item[C_SOFA] = active.iloc[-1].get(C_SOFA, active.iloc[-1].get("sofa", pd.NA))
 
-            combined_data.append(item)
+            patient_items.append(item)
+
+        # Convert urine_output from ml/event to ml/h rate.
+        # Raw values depend on measurement interval (1h event → ~50ml, 6h event → ~300ml
+        # for the same true production rate). Dividing by delta_t makes the feature
+        # a true instantaneous rate comparable across irregular measurement schedules.
+        _uo_indices = [
+            j for j, it in enumerate(patient_items)
+            if C_URINE_OUTPUT in it and it[C_URINE_OUTPUT] is not pd.NA
+            and not (isinstance(it[C_URINE_OUTPUT], float) and pd.isna(it[C_URINE_OUTPUT]))
+        ]
+        for j_pos, j in enumerate(_uo_indices):
+            if j_pos == 0:
+                # No previous measurement within this episode — set to missing.
+                patient_items[j][C_URINE_OUTPUT] = pd.NA
+            else:
+                prev_j = _uo_indices[j_pos - 1]
+                delta_s = float(patient_items[j][C_TIMESTEP]) - float(patient_items[prev_j][C_TIMESTEP])
+                delta_h = delta_s / 3600.0
+                if delta_h > 0:
+                    rate = float(patient_items[j][C_URINE_OUTPUT]) / delta_h
+                    # Cap at 500 ml/h to suppress data-entry outliers.
+                    patient_items[j][C_URINE_OUTPUT] = min(rate, 500.0)
+                else:
+                    patient_items[j][C_URINE_OUTPUT] = pd.NA
+
+        combined_data.extend(patient_items)
 
         infection_times.append({
             C_ICUSTAYID: icustayid,
