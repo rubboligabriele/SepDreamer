@@ -12,6 +12,13 @@ from sklearn.model_selection import train_test_split
 import src.meddreamer.utils.tools as tools
 from src.meddreamer.dreamer import Dreamer, MedDreamer
 
+try:
+    import sys as _sys
+    _sys.path.insert(0, "src")
+    from preprocessing.utils.columns import ALL_FEATURE_COLUMNS as _FEAT_NAMES
+except Exception:
+    _FEAT_NAMES = None
+
 def make_dataset(episodes, config):
     generator = tools.sample_episodes(episodes, config.train_batch_length, seed=config.seed)
     dataset = tools.from_generator(generator, config.batch_size)
@@ -21,6 +28,9 @@ def main(config):
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
+
+    if _FEAT_NAMES is not None and not hasattr(config, "feature_names"):
+        config.feature_names = list(_FEAT_NAMES[: config.num_features])
 
     logdir = pathlib.Path(config.logdir).expanduser() / f"{datetime.now().strftime('%Y-%m-%d/%H-%M-%S')}_{config.logname}_{config.dataset}_{config.task}"
 
