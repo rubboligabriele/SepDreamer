@@ -526,6 +526,7 @@ class MLP(nn.Module):
         symlog_inputs=False,
         device=None,
         name="NoName",
+        pos_weight=None,
     ):
         super(MLP, self).__init__()
         self._shape = (shape,) if isinstance(shape, int) else shape
@@ -541,6 +542,7 @@ class MLP(nn.Module):
         self._unimix_ratio = unimix_ratio
         self._symlog_inputs = symlog_inputs
         self._device = device
+        self._pos_weight = pos_weight
 
         self.layers = nn.Sequential()
         for i in range(layers):
@@ -651,7 +653,8 @@ class MLP(nn.Module):
             dist = tools.Bernoulli(
                 torchd.independent.Independent(
                     torchd.bernoulli.Bernoulli(logits=mean), len(shape)
-                )
+                ),
+                pos_weight=getattr(self, "_pos_weight", None),
             )
         elif dist == "symlog_disc":
             dist = tools.DiscDist(logits=mean)

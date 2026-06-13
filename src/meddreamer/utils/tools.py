@@ -447,10 +447,11 @@ class ContDist:
 
 
 class Bernoulli:
-    def __init__(self, dist=None):
+    def __init__(self, dist=None, pos_weight=None):
         super().__init__()
         self._dist = dist
         self.mean = dist.mean
+        self._pos_weight = pos_weight
 
     def __getattr__(self, name):
         return getattr(self._dist, name)
@@ -469,7 +470,8 @@ class Bernoulli:
         _logits = self._dist.base_dist.logits
         log_probs0 = -F.softplus(_logits)
         log_probs1 = -F.softplus(-_logits)
-
+        if self._pos_weight is not None:
+            return torch.sum(log_probs0 * (1 - x) + self._pos_weight * log_probs1 * x, -1)
         return torch.sum(log_probs0 * (1 - x) + log_probs1 * x, -1)
 
 
