@@ -17,6 +17,14 @@ from torch.utils.tensorboard import SummaryWriter
 
 to_np = lambda x: x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.array(x)
 
+def bt_flatten(x):
+    """Flatten (B, T, ...) -> (B*T, ...)"""
+    return x.reshape([-1] + list(x.shape[2:]))
+
+def bt_unflatten(x, B, T):
+    """Unflatten (B*T, ...) -> (B, T, ...)"""
+    return x.reshape([B, T] + list(x.shape[1:]))
+
 def symlog(x):
     return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
 
@@ -973,6 +981,55 @@ def plot_mortality_vs_value(value_values, mortality, num_bins=20, xlabel="Estima
     plt.show()
 
     return fig, bin_centers, smoothed, smoothed_std
+
+
+def plot_recon_error_per_feature(
+    feat_mse_post, feat_mse_prior, feat_names,
+    feat_mse_post_death=None, feat_mse_prior_death=None,
+    feat_mse_post_surv=None, feat_mse_prior_surv=None,
+):
+    """
+    Bar chart of per-feature MSE for post (observed) and prior (imagined) rollout.
+    Optionally overlays death vs survival breakdown.
+    Returns (fig_post, fig_prior, fig_delta).
+    """
+    n = len(feat_names)
+    idx = np.arange(n)
+
+    def _bar_fig(mse_main, label_main, mse_death=None, mse_surv=None, title=""):
+        order = np.argsort(-mse_main)
+        fig, ax = plt.subplots(figsize=(max(12, n * 0.35), 5), facecolor="white")
+        ax.bar(idx, mse_main[order], label=label_main, alpha=0.75)
+        if mse_death is not None and mse_surv is not None:
+            ax.plot(idx, mse_death[order], "v", color="red",   markersize=5, label="death")
+            ax.plot(idx, mse_surv[order],  "^", color="green", markersize=5, label="survival")
+        ax.set_xticks(idx)
+        ax.set_xticklabels(np.array(feat_names)[order], rotation=90, fontsize=8)
+        ax.set_ylabel("MSE")
+        ax.set_title(title)
+        ax.legend(fontsize=9)
+        ax.grid(axis="y", alpha=0.4)
+        fig.tight_layout()
+        return fig
+
+    fig_post  = _bar_fig(feat_mse_post,  "post",  feat_mse_post_death,  feat_mse_post_surv,  "Reconstruction MSE per feature (post — observed steps)")
+    fig_prior = _bar_fig(feat_mse_prior, "prior", feat_mse_prior_death, feat_mse_prior_surv, "Reconstruction MSE per feature (prior — imagined rollout)")
+
+    # delta: prior - post, sorted by worst degradation
+    delta = feat_mse_prior - feat_mse_post
+    order_d = np.argsort(-delta)
+    fig_delta, ax = plt.subplots(figsize=(max(12, n * 0.35), 5), facecolor="white")
+    colors = ["red" if d > 0 else "steelblue" for d in delta[order_d]]
+    ax.bar(idx, delta[order_d], color=colors)
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(idx)
+    ax.set_xticklabels(np.array(feat_names)[order_d], rotation=90, fontsize=8)
+    ax.set_ylabel("MSE prior − post")
+    ax.set_title("Rollout degradation per feature (red = worse in imagined rollout)")
+    ax.grid(axis="y", alpha=0.4)
+    fig_delta.tight_layout()
+
+    return fig_post, fig_prior, fig_delta
 
 
 def calculate_estimated_mortality(ai_values, bin_centers, smoothed, smoothed_sem):
