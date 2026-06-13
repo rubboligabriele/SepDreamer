@@ -7,7 +7,7 @@ import src.meddreamer.models.networks as networks
 import src.meddreamer.utils.tools as tools
 from src.meddreamer.models.afi import AFIEmbedding
 
-to_np = lambda x: x.detach().cpu().numpy()
+to_np = tools.to_np
 
 
 class RewardEMA:
@@ -33,7 +33,6 @@ class WorldModel(nn.Module):
         super(WorldModel, self).__init__()
         self._config = config
         shapes = {"features": tuple((config.num_features,))}
-        # shapes = {"features": tuple((config.num_features,)), "delta": tuple((1,))} #ablation: add delta to input
         if config.fm["use_fm"]:
             self.encoder = AFIEmbedding(config.num_features, config.fm["fm_units"])
         else:
@@ -103,7 +102,6 @@ class WorldModel(nn.Module):
         print(
             f"Optimizer model_opt has {sum(param.numel() for param in self.parameters())} variables."
         )
-        # other losses are scaled by 1.0.
         self._scales = dict(
             features=config.cont_head["loss_scale"],
             reward=config.reward_head["loss_scale"],
@@ -111,10 +109,6 @@ class WorldModel(nn.Module):
         )
 
     def _train(self, data):
-        # action (batch_size, batch_length, num_actions)
-        # features (batch_size, batch_length, num_features)
-        # reward (batch_size, batch_length)
-        # discount (batch_size, batch_length)
         B, T, _ = data["features"].shape
         data = self.preprocess(data)
 
@@ -162,17 +156,11 @@ class WorldModel(nn.Module):
                     flush=True,
                 )
 
-        flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-        unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
-        features = flatten(data["features"])# (batch_size, batch_length, num_features) -> (batch_size * batch_length, num_features)
-        if self._config.fm["use_fm"]:
-            delta = flatten(data["delta"]) 
-        else:
-            delta = None
+        features = tools.bt_flatten(data["features"])
+        delta = tools.bt_flatten(data["delta"]) if self._config.fm["use_fm"] else None
 
         with tools.RequiresGrad(self):
-            embed = self.encoder(features, delta)
-            embed = unflatten(embed)# (batch_size * batch_length, num_features) -> (batch_size, batch_length, num_features)
+            embed = tools.bt_unflatten(self.encoder(features, delta), B, T)
             post, prior = self.dynamics.observe(
                 embed, data["action"], data["is_first"]
             )
@@ -219,9 +207,6 @@ class WorldModel(nn.Module):
             metrics = self._model_opt(torch.mean(model_loss), self.parameters())
 
         metrics.update({f"{name}_loss": to_np(loss) for name, loss in losses.items()})
-        # metrics["kl_free"] = kl_free
-        # metrics["dyn_scale"] = dyn_scale
-        # metrics["rep_scale"] = rep_scale
         metrics["dyn_loss"] = to_np(dyn_loss)
         metrics["rep_loss"] = to_np(rep_loss)
         metrics["kl"] = to_np(torch.mean(kl_value))
@@ -244,17 +229,9 @@ class WorldModel(nn.Module):
         B, T, _ = data["features"].shape
         data = self.preprocess(data)
 
-        flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-        unflatten = lambda x: x.reshape([B, T] + list(x.shape[1:]))
-
-        features = flatten(data["features"])
-        if self._config.fm["use_fm"]:
-            delta = flatten(data["delta"])
-        else:
-            delta = None
-
-        embed = self.encoder(features, delta)
-        embed = unflatten(embed)
+        features = tools.bt_flatten(data["features"])
+        delta = tools.bt_flatten(data["delta"]) if self._config.fm["use_fm"] else None
+        embed = tools.bt_unflatten(self.encoder(features, delta), B, T)
 
         action = data["action"].detach().clone()
         is_first = data["is_first"].detach().clone()
@@ -281,7 +258,6 @@ class WorldModel(nn.Module):
                     f"embed_norm={float(embed[0, t].norm().item()):.4f}"
                 )
 
-        # attiva debug interno RSSM solo se richiesto
         if debug:
             self.dynamics._debug_mode = True
             self.dynamics._debug_obs_counter = 0
@@ -311,30 +287,29 @@ class WorldModel(nn.Module):
 
         return post, embed, data
 
-    # this function is called during both rollout and training
     def preprocess(self, obs):
         obs = {
             k: torch.tensor(v, device=self._config.device, dtype=torch.float32)
             for k, v in obs.items()
         }
         if "discount" in obs:
-            obs["discount"] *= self._config.discount
-            # (batch_size, batch_length) -> (batch_size, batch_length, 1)
-            obs["discount"] = obs["discount"].unsqueeze(-1)
-        # 'is_first' is necesarry to initialize hidden state at training
+            obs["discount"] = (obs["discount"] * self._config.discount).unsqueeze(-1)
         assert "is_first" in obs
-        # 'is_terminal' is necesarry to train cont_head
         assert "is_terminal" in obs
         if self._config.cont_type == 'cont':
-            obs["cont"] = (1.0 - obs["is_terminal"]).unsqueeze(-1) # continue predictor
+            obs["cont"] = (1.0 - obs["is_terminal"]).unsqueeze(-1)
         elif self._config.cont_type == 'mort2':
-            cont = torch.where((obs['is_terminal'] == 1) & (obs['mortality'] == 1), torch.tensor(0.0, device=self._config.device), torch.tensor(1.0, device=self._config.device))
-            obs["cont"] = cont.unsqueeze(-1) # mortality predictor
+            cont = torch.where(
+                (obs['is_terminal'] == 1) & (obs['mortality'] == 1),
+                torch.tensor(0.0, device=self._config.device),
+                torch.tensor(1.0, device=self._config.device),
+            )
+            obs["cont"] = cont.unsqueeze(-1)
         elif self._config.cont_type == 'mort3':
             status = torch.full_like(obs['is_terminal'], 2, dtype=torch.long)
             status[(obs['is_terminal'] == 1) & (obs['mortality'] == 1)] = 0
             status[(obs['is_terminal'] == 1) & (obs['mortality'] == 0)] = 1
-            obs['cont'] = F.one_hot(status, num_classes=3) # mortality/discharged/in ICU
+            obs['cont'] = F.one_hot(status, num_classes=3)
 
         reward = obs[self._config.reward_key].clone()
 
@@ -418,7 +393,6 @@ class ImagBehavior(nn.Module):
             f"Optimizer value_opt has {sum(param.numel() for param in self.value.parameters())} variables."
         )
         if self._config.reward_EMA:
-            # register ema_vals to nn.Module for enabling torch.save and torch.load
             self.register_buffer(
                 "ema_vals", torch.zeros((2,), device=self._config.device)
             )
@@ -826,8 +800,7 @@ class ImagBehavior(nn.Module):
 
     def _imagine_in_horizon(self, start, policy, horizon):
         dynamics = self._world_model.dynamics
-        flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
-        start = {k: flatten(v) for k, v in start.items()}
+        start = {k: tools.bt_flatten(v) for k, v in start.items()}
 
         def step(prev, _):
             state, _, _ = prev
@@ -1176,47 +1149,29 @@ class BehaviorPolicy(nn.Module):
         return h0, c0
 
     def forward(self, feat, is_first=None):
-        """
-        feat: [B, T, D]
-        returns distribution over actions for each timestep.
-        """
-
         if self.policy_type == "mlp":
             B, T, D = feat.shape
-            x = feat.reshape(B * T, D)
-            logits = self.net(x)
-            logits = logits.reshape(B, T, -1)
+            logits = self.net(feat.reshape(B * T, D)).reshape(B, T, -1)
             return tools.OneHotDist(logits)
 
-        if self.policy_type == "lstm":
-            B, T, _ = feat.shape
-            device = feat.device
+        # lstm
+        B, T, _ = feat.shape
+        if is_first is None:
+            h, _ = self.lstm(feat)
+            return tools.OneHotDist(self.head(h))
 
-            if is_first is None:
-                h, _ = self.lstm(feat)
-                logits = self.head(h)
-                return tools.OneHotDist(logits)
-
-            hx, cx = self._init_hidden(B, device)
-            outputs = []
-
-            for t in range(T):
-                reset_mask = is_first[:, t].bool()
-
-                if reset_mask.any():
-                    hx = hx.clone()
-                    cx = cx.clone()
-                    hx[:, reset_mask] = 0.0
-                    cx[:, reset_mask] = 0.0
-
-                out_t, (hx, cx) = self.lstm(feat[:, t:t + 1, :], (hx, cx))
-                outputs.append(out_t)
-
-            h = torch.cat(outputs, dim=1)
-            logits = self.head(h)
-            return tools.OneHotDist(logits)
-
-        raise ValueError(f"Unknown behavior_model.type: {self.policy_type}")
+        hx, cx = self._init_hidden(B, feat.device)
+        outputs = []
+        for t in range(T):
+            reset_mask = is_first[:, t].bool()
+            if reset_mask.any():
+                hx = hx.clone()
+                cx = cx.clone()
+                hx[:, reset_mask] = 0.0
+                cx[:, reset_mask] = 0.0
+            out_t, (hx, cx) = self.lstm(feat[:, t:t + 1, :], (hx, cx))
+            outputs.append(out_t)
+        return tools.OneHotDist(self.head(torch.cat(outputs, dim=1)))
 
     def train_batch(self, feat, action_onehot, is_first):
         self.train()
