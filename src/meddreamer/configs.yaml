@@ -226,7 +226,7 @@ dreamer:
   cont_head:
     {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0} 
   task: 'ventilation'
-  dataset: 'eicu'
+  dataset: 'mimic'
   reward_key: 'ori_reward'
   cont_type: 'cont'
   num_features: 41
