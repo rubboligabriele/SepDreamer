@@ -5,15 +5,12 @@ import pickle
 import sys
 import time
 
-import random
 from ruamel.yaml import YAML
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 
 import src.meddreamer.utils.tools as tools
 from src.meddreamer.dreamer import Dreamer, MedDreamer
-
-to_np = lambda x: x.detach().cpu().numpy()
 
 def make_dataset(episodes, config):
     generator = tools.sample_episodes(episodes, config.train_batch_length, seed=config.seed)
@@ -24,7 +21,7 @@ def main(config):
     tools.set_seed_everywhere(config.seed)
     if config.deterministic_run:
         tools.enable_deterministic_run()
-    # logdir = pathlib.Path(config.logdir).expanduser()
+
     logdir = pathlib.Path(config.logdir).expanduser() / f"{datetime.now().strftime('%Y-%m-%d/%H-%M-%S')}_{config.logname}_{config.dataset}_{config.task}"
 
     print("Logdir", logdir)
@@ -33,18 +30,18 @@ def main(config):
     logger = tools.Logger(logdir)
     
     start_time = time.time()
-    if config.dataset == "eicu":
-        eps_dir = os.path.join(config.datadir, config.dataset, 'short_episodes')
-    else:
-        eps_dir = os.path.join(config.datadir, config.dataset, 'episodes')
+
+    eps_dir = os.path.join(config.datadir, config.dataset, 'episodes')
 
     all_stay_ids = tools.load_all_episode_keys(eps_dir)
     if config.debug:
         all_stay_ids = all_stay_ids[:1000]
 
+    # where to save the splits for reproducibility
     cache_root = os.path.dirname(eps_dir)
     split_path = os.path.join(cache_root, f"splits_seed{config.seed}.pkl")
 
+    # if piclkes with splits already exist, load them, otherwise create new splits and save them
     if os.path.exists(split_path):
         print(f"Loading fixed splits from {split_path}", flush=True)
         with open(split_path, "rb") as f:
@@ -74,6 +71,7 @@ def main(config):
 
     cache_root = os.path.dirname(eps_dir)
 
+    # chache files names
     train_cache_path = os.path.join(cache_root, f"train_eps_cache_seed{config.seed}.pkl")
     val_cache_path = os.path.join(cache_root, f"val_eps_cache_seed{config.seed}.pkl")
     test_cache_path = os.path.join(cache_root, f"test_eps_cache_seed{config.seed}.pkl")
@@ -82,6 +80,8 @@ def main(config):
         train_eps = tools.load_split_episodes(eps_dir, train_stay_ids, cache_path=train_cache_path)
         eval_eps = tools.load_split_episodes(eps_dir, val_stay_ids, cache_path=val_cache_path)
 
+        # create a geenrator that samples from the training episodes with the specified batch length,
+        # and then create a tf dataset from that generator with the specified batch size
         train_dataset = make_dataset(train_eps, config)
         print(f"Using full validation set for eval: {len(eval_eps)} episodes.", flush=True)
     else:
