@@ -24,45 +24,54 @@ MEDR_RAW_RANGES = {
     "sofa_24hours": (0.0, 23.0),
     "baseexcess": (-25.0, 25.0),
     "lactate": (0.3, 29.0),
-    "urineoutput": (0.0, 800.0),
+    # urine_output is now in ml/h (rate). Typical ICU range 0–500 ml/h.
+    # Oliguria threshold: ~40 ml/h (0.5 ml/kg/h × 80 kg).
+    "urineoutput": (0.0, 500.0),
     "mbp": (40.0, 140.0),
     "heartrate": (40.0, 160.0),
 }
+
+# Parameters from medr_cand_0062 (best candidate, stable across evaluation runs):
+#   action_cost_scale=0.05, half_life=48, confidence_tau=24,
+#   sigma_scale=1.25, k_scale=1.0, survival_weight=0.8, confidence_weight=0.2
+_K_SCALE = 1.0
+_SIGMA_SCALE = 1.25
 
 SURVIVAL_CONFIG = {
     "sofa_24hours": {
         "type": "directional_decay",
         "direction": "low",
-        "k": 2.3 * 1.25,
+        "k": 2.3 * _K_SCALE,
     },
     "baseexcess": {
         "type": "bell",
         "target": normalize_raw(-2.0, *MEDR_RAW_RANGES["baseexcess"]),
-        "sigma": 0.1,
+        "sigma": 0.1 * _SIGMA_SCALE,
     },
     "lactate": {
         "type": "decay_lower",
         "target": normalize_raw(1.6, *MEDR_RAW_RANGES["lactate"]),
-        "sigma": 0.05 / 1.25,
+        "sigma": 0.05 * _SIGMA_SCALE,
     },
     "urineoutput": {
         "type": "directional_decay",
         "direction": "high",
         "threshold": normalize_raw(40.0, *MEDR_RAW_RANGES["urineoutput"]),
-        "k": 5.0 * 1.25,
+        "k": 5.0 * _K_SCALE,
     },
     "mbp": {
         "type": "bell",
         "target": normalize_raw(75.0, *MEDR_RAW_RANGES["mbp"]),
-        "sigma": 0.1,
+        "sigma": 0.1 * _SIGMA_SCALE,
     },
     "heartrate": {
         "type": "bell",
         "target": normalize_raw(85.0, *MEDR_RAW_RANGES["heartrate"]),
-        "sigma": 0.1,
+        "sigma": 0.1 * _SIGMA_SCALE,
     },
 }
 
+# confidence_tau=24h from cand0062 — confidence decays over 24h of feature staleness
 CONFIDENCE_TAU = {
     "sofa_24hours": 24.0,
     "baseexcess": 24.0,
@@ -74,7 +83,7 @@ CONFIDENCE_TAU = {
 
 MAX_DOSE_LEVEL = 4
 
-# Important changed values
+# cand0062: action_cost_scale=0.05, survival_weight=0.8, confidence_weight=0.2
 ACTION_COST_SCALE = 0.05
 POTENTIAL_DIFF_SCALE = 20.0
 USE_TIME_DECAY = False
