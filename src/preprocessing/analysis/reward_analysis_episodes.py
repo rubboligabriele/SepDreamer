@@ -1,3 +1,9 @@
+"""
+python -u -m src.preprocessing.analysis.reward_analysis_episodes \
+  --episodes-dir data/meddreamer_dataset/mimic/episodes \
+  --output-dir reward_analysis \
+  --bins 100
+"""
 import os
 import json
 import argparse
