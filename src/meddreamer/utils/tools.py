@@ -15,7 +15,7 @@ from torch.nn import functional as F
 from torch import distributions as torchd
 from torch.utils.tensorboard import SummaryWriter
 
-to_np = lambda x: x.detach().cpu().numpy()
+to_np = lambda x: x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.array(x)
 
 def symlog(x):
     return torch.sign(x) * torch.log(torch.abs(x) + 1.0)
@@ -116,6 +116,7 @@ def from_generator(generator, batch_size):
 def sample_episodes(episodes, length, seed=0):
     np_random = np.random.RandomState(seed)
 
+    # iterate over real episodes data (keys = stayids)
     episode_list = list(episodes.values())
     if len(episode_list) == 0:
         raise ValueError("No episodes available.")
@@ -133,11 +134,13 @@ def sample_episodes(episodes, length, seed=0):
         "mortality",
     ]
 
+    # array of episode lengths, used to sample episodes with probability proportional to their length
     episode_lengths = np.array(
         [len(ep["timestep"]) for ep in episode_list],
         dtype=np.int64,
     )
 
+    # conversion fo float64 because division with int64 can give 0, butr we need a probability distribution (ex. 0.35, 0.65)
     p = episode_lengths.astype(np.float64)
     p = p / p.sum()
 
@@ -146,18 +149,23 @@ def sample_episodes(episodes, length, seed=0):
         chunks = []
         first_flags = []
 
+        # lenght is the number of timesteps we want to sample from the episodes, we keep sampling until we reach this length (usually 50)
         while size < length:
             ep_idx = np_random.choice(len(episode_list), p=p)
             episode = episode_list[ep_idx]
             total = episode_lengths[ep_idx]
 
+            # if the episode is too short, we skip it and sample another one
             if total < 2:
                 continue
 
             if size == 0:
+                # if we are at the beginning of the sampling, we can sample a random index in the episode and take a chunk of length "length" from there
                 index = int(np_random.randint(0, total - 1))
                 end = min(index + length, total)
             else:
+                # to complete the batch we sample other episodes, but always starting from step 0...because of "is_first".
+                # We need the model to understand it's not a single episode.
                 index = 0
                 possible = length - size
                 end = min(index + possible, total)
@@ -171,6 +179,7 @@ def sample_episodes(episodes, length, seed=0):
             first_flags.append(size)
             size += len(chunk["timestep"])
 
+        # reset is_first flags for the concatenated chunks, only the first timestep of the first chunk is marked as True, all others are False
         ret = {}
         for k in time_keys:
             ret[k] = np.concatenate([c[k] for c in chunks], axis=0)
@@ -196,27 +205,40 @@ def load_episode_npz(filepath):
     return {key: data[key] for key in data.files}
 
 def load_all_episode_keys(saved_eps_dir):
+    """
+    Takes the icustayid of every .npz episode in the episodes directory, using the filename without the .npz extension as the icustayid
+    """
     filenames = [f for f in os.listdir(saved_eps_dir) if f.endswith('.npz')]
     stay_ids = [fname[:-4] for fname in filenames]
     return stay_ids
 
 def load_split_episodes(saved_eps_dir, stay_ids, cache_path=None):
+    """
+    Loads episodes for the given stay_ids from the saved_eps_dir.
+    If cache_path is provided but the cached files don't exist yet, it will save the loaded episodes to a pickle file at cache_path for faster loading next time.
+    If the pickle file already exists, it will load the episodes from the pickle file instead of loading from the .npz files, for higher efficiency.
+    """
     if cache_path is not None and os.path.exists(cache_path):
         print(f"[DataLoader] Loading cached episodes from {cache_path}", flush=True)
         with open(cache_path, "rb") as f:
             episodes = pickle.load(f)
         return episodes
 
+    # if cache is not available, load episodes from .npz files and save to cache if cache_path is provided
     episodes = {}
     total = len(stay_ids)
 
     print(f"[DataLoader] Loading {total} episodes from {saved_eps_dir}", flush=True)
 
     for i, stay_id in enumerate(stay_ids, 1):
+        # recreate files name using stayids
         filepath = os.path.join(saved_eps_dir, f"{stay_id}.npz")
         episode = load_episode_npz(filepath)
+
+        # create a dictionary with stay_id as key and REAL episode as value
         episodes[stay_id] = episode
 
+        # for logging progress, print every 100 episodes or at the first episode
         if i % 100 == 0 or i == 1:
             print(f"[DataLoader] Loaded {i}/{total}", flush=True)
 
@@ -302,8 +324,7 @@ class DiscDist:
         return self.transbwd(torch.sum(_mean, dim=-1, keepdim=True))
 
     def mode(self):
-        _mode = self.probs * self.buckets
-        return self.transbwd(torch.sum(_mode, dim=-1, keepdim=True))
+        return self.mean()
 
     # Inside OneHotCategorical, log_prob is calculated using only max element in targets
     def log_prob(self, x):
@@ -336,6 +357,15 @@ class DiscDist:
         log_pred = super().logits - torch.logsumexp(super().logits, -1, keepdim=True)
         return (target * log_pred).sum(-1)
 
+def _aggregate(distance, agg):
+    dims = list(range(len(distance.shape)))[2:]
+    if agg == "mean":
+        return distance.mean(dims)
+    elif agg == "sum":
+        return distance.sum(dims)
+    elif agg == "raw":
+        return distance
+    raise NotImplementedError(agg)
 
 class MSEDist:
     def __init__(self, mode, agg="raw"):
@@ -351,15 +381,7 @@ class MSEDist:
     def log_prob(self, value):
         assert self._mode.shape == value.shape, (self._mode.shape, value.shape)
         distance = (self._mode - value) ** 2
-        if self._agg == "mean":
-            loss = distance.mean(list(range(len(distance.shape)))[2:])
-        elif self._agg == "sum":
-            loss = distance.sum(list(range(len(distance.shape)))[2:])
-        elif self._agg == "raw":
-            loss = distance
-        else:
-            raise NotImplementedError(self._agg)
-        return -loss
+        return -_aggregate(distance, self._agg)
 
 
 class SymlogDist:
@@ -369,11 +391,11 @@ class SymlogDist:
         self._agg = agg
         self._tol = tol
 
-    def mode(self):
-        return symexp(self._mode)
-
     def mean(self):
         return symexp(self._mode)
+
+    def mode(self):
+        return self.mean()
 
     def log_prob(self, value):
         assert self._mode.shape == value.shape
@@ -385,15 +407,7 @@ class SymlogDist:
             distance = torch.where(distance < self._tol, 0, distance)
         else:
             raise NotImplementedError(self._dist)
-        if self._agg == "mean":
-            loss = distance.mean(list(range(len(distance.shape)))[2:])
-        elif self._agg == "sum":
-            loss = distance.sum(list(range(len(distance.shape)))[2:])
-        elif self._agg == "raw":
-            loss = distance
-        else:
-            raise NotImplementedError(self._agg)
-        return -loss
+        return -_aggregate(distance, self._agg)
 
 class ContDist:
     def __init__(self, dist=None, absmax=None):
@@ -612,13 +626,13 @@ class Optimizer:
         self._opt.zero_grad()
         self._scaler.scale(loss).backward(retain_graph=retain_graph)
         self._scaler.unscale_(self._opt)
-        # loss.backward(retain_graph=retain_graph)
         norm = torch.nn.utils.clip_grad_norm_(params, self._clip)
+
         if self._wd:
             self._apply_weight_decay(params)
+
         self._scaler.step(self._opt)
         self._scaler.update()
-        # self._opt.step()
         self._opt.zero_grad()
         metrics[f"{self._name}_grad_norm"] = to_np(norm)
         return metrics
@@ -751,29 +765,19 @@ class Until:
             return True
         return step < self._until
 
+def _compute_fan(m):
+    if isinstance(m, nn.Linear):
+        return m.in_features, m.out_features
+    space = m.kernel_size[0] * m.kernel_size[1]
+    return space * m.in_channels, space * m.out_channels
 
 def weight_init(m):
-    if isinstance(m, nn.Linear):
-        in_num = m.in_features
-        out_num = m.out_features
+    if isinstance(m, (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)):
+        in_num, out_num = _compute_fan(m)
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
         std = np.sqrt(scale) / 0.87962566103423978
-        nn.init.trunc_normal_(
-            m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std
-        )
-        if hasattr(m.bias, "data"):
-            m.bias.data.fill_(0.0)
-    elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-        space = m.kernel_size[0] * m.kernel_size[1]
-        in_num = space * m.in_channels
-        out_num = space * m.out_channels
-        denoms = (in_num + out_num) / 2.0
-        scale = 1.0 / denoms
-        std = np.sqrt(scale) / 0.87962566103423978
-        nn.init.trunc_normal_(
-            m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std
-        )
+        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
     elif isinstance(m, nn.LayerNorm):
@@ -784,19 +788,8 @@ def weight_init(m):
 
 def uniform_weight_init(given_scale):
     def f(m):
-        if isinstance(m, nn.Linear):
-            in_num = m.in_features
-            out_num = m.out_features
-            denoms = (in_num + out_num) / 2.0
-            scale = given_scale / denoms
-            limit = np.sqrt(3 * scale)
-            nn.init.uniform_(m.weight.data, a=-limit, b=limit)
-            if hasattr(m.bias, "data"):
-                m.bias.data.fill_(0.0)
-        elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-            space = m.kernel_size[0] * m.kernel_size[1]
-            in_num = space * m.in_channels
-            out_num = space * m.out_channels
+        if isinstance(m, (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)):
+            in_num, out_num = _compute_fan(m)
             denoms = (in_num + out_num) / 2.0
             scale = given_scale / denoms
             limit = np.sqrt(3 * scale)
@@ -807,7 +800,6 @@ def uniform_weight_init(given_scale):
             m.weight.data.fill_(1.0)
             if hasattr(m.bias, "data"):
                 m.bias.data.fill_(0.0)
-
     return f
 
 
@@ -929,57 +921,6 @@ def sliding_mean(x, window=5):
 def find_nearest_Q(Q_mean, res_dt):
     idx = np.argmin(np.abs(res_dt['q_value'] - Q_mean))
     return res_dt.iloc[idx]
-
-def plot_mortality_vs_expected_return(reward_values, mortality, num_bins=20):
-    # Trim to middle 98% quantile range
-    q01, q99 = np.quantile(reward_values, [0.01, 0.99])
-    mask = (reward_values >= q01) & (reward_values <= q99)
-    reward_values = reward_values[mask]
-    mortality = mortality[mask.squeeze()]
-
-    # Define bin edges and centers
-    bin_edges = np.linspace(q01, q99, num_bins + 1)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-
-    # Assign each reward to a bin index
-    bin_indices = np.digitize(reward_values, bin_edges) - 1  # bin index ∈ [0, num_bins-1]
-
-    # Initialize arrays
-    mortality_means = np.empty(num_bins)
-    mortality_stds = np.empty(num_bins)
-    mortality_means[:] = np.nan
-    mortality_stds[:] = np.nan
-
-    # Vectorized bin stats computation
-    for i in range(num_bins):
-        in_bin = bin_indices == i
-        if np.sum(in_bin) >= 2:
-            mortality_means[i] = np.mean(mortality[in_bin])
-            mortality_stds[i] = sem(mortality[in_bin])
-
-    # Filter out empty bins (NaNs)
-    valid = ~np.isnan(mortality_means)
-    bin_centers = bin_centers[valid]
-    mortality_means = mortality_means[valid]
-    mortality_stds = mortality_stds[valid]
-
-    # Smooth (optional)
-    smoothed = sliding_mean(mortality_means)
-    smoothed_std = sliding_mean(mortality_stds)
-
-    # Plot
-    fig, ax = plt.subplots(figsize=(5, 4.5), facecolor='white')
-    ax.plot(bin_centers, smoothed)
-    ax.fill_between(bin_centers, smoothed - smoothed_std, smoothed + smoothed_std, color='#ADD8E6')
-    ax.set_xlabel("Expected Return", fontsize=15)
-    ax.set_ylabel("Mortality", fontsize=15)
-    ax.set_yticks([i / 10 for i in range(11)])
-    ax.tick_params(labelsize=15)
-    ax.grid()
-    fig.tight_layout()
-    plt.show()
-
-    return fig, bin_centers, smoothed, smoothed_std
 
 
 def plot_mortality_vs_value(value_values, mortality, num_bins=20, xlabel="Estimated Value"):
