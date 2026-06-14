@@ -412,7 +412,12 @@ def build_patient_states_derived(
                 delta_s = float(patient_items[j][C_TIMESTEP]) - float(patient_items[prev_j][C_TIMESTEP])
                 delta_h = delta_s / 3600.0
                 if delta_h > 0:
-                    rate = float(patient_items[j][C_URINE_OUTPUT]) / delta_h
+                    raw = float(patient_items[j][C_URINE_OUTPUT])
+                    if raw < 0:
+                        # Negative values are corrections/removals in MIMIC — treat as missing.
+                        patient_items[j][C_URINE_OUTPUT] = pd.NA
+                        continue
+                    rate = raw / delta_h
                     # Cap at 500 ml/h to suppress data-entry outliers.
                     patient_items[j][C_URINE_OUTPUT] = min(rate, 500.0)
                 else:
