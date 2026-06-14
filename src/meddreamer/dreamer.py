@@ -630,6 +630,25 @@ class Dreamer(nn.Module):
             feat_mse_post  = feat_mse_post_sum  / np.maximum(feat_mask_post_cnt,  1)
             feat_mse_prior = feat_mse_prior_sum / np.maximum(feat_mask_prior_cnt, 1)
 
+            if "urine_output" in feat_names:
+                _uo_idx = feat_names.index("urine_output")
+                print(f"\n[UO DEBUG epoch={epoch}]", flush=True)
+                print(f"  urine_output MSE post={feat_mse_post[_uo_idx]:.4f}  prior={feat_mse_prior[_uo_idx]:.4f}", flush=True)
+                # Sample raw true vs predicted values from last batch
+                with torch.no_grad():
+                    _uo_true_post  = data["features"][:, :5, _uo_idx]
+                    _uo_pred_post  = recon[:, :5, _uo_idx]
+                    _uo_true_prior = data["features"][:, 5:, _uo_idx]
+                    _uo_pred_prior = openl[:, :, _uo_idx]
+                    _mask_post     = data["mask"][:, :5, _uo_idx].bool()
+                    _mask_prior    = data["mask"][:, 5:, _uo_idx].bool()
+                    if _mask_post.any():
+                        print(f"  POST  true:  {_uo_true_post[_mask_post][:8].cpu().tolist()}", flush=True)
+                        print(f"  POST  pred:  {_uo_pred_post[_mask_post][:8].cpu().tolist()}", flush=True)
+                    if _mask_prior.any():
+                        print(f"  PRIOR true:  {_uo_true_prior[_mask_prior][:8].cpu().tolist()}", flush=True)
+                        print(f"  PRIOR pred:  {_uo_pred_prior[_mask_prior][:8].cpu().tolist()}", flush=True)
+
             feat_mse_post_death  = feat_mse_post_death_sum  / np.maximum(feat_mask_post_death_cnt,  1)
             feat_mse_post_surv   = feat_mse_post_surv_sum   / np.maximum(feat_mask_post_surv_cnt,   1)
             feat_mse_prior_death = feat_mse_prior_death_sum / np.maximum(feat_mask_prior_death_cnt, 1)
