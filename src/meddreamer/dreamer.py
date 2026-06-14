@@ -966,7 +966,10 @@ class Dreamer(nn.Module):
         if epoch >= self._config.log_every and self._should_log(epoch):
             for name, values in self._metrics.items():
                 if values:
-                    self._logger.scalar(name, float(np.mean(values)))
+                    if isinstance(values[0], str):
+                        self._logger.scalar(name, values[-1])
+                    else:
+                        self._logger.scalar(name, float(np.mean(values)))
                     self._metrics[name] = []
             for name, values in self._images.items():
                 if values:
