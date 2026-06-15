@@ -487,15 +487,17 @@ class Dreamer(nn.Module):
                 recon = self._wm.heads["decoder"](feat_post)["features"].mode()
                 openl = self._wm.heads["decoder"](feat_prior)["features"].mode()
 
-                # Reconstruction
+                # Reconstruction (bloc excluded — same as training)
+                eval_mask = data["mask"].clone()
+                eval_mask[..., -1] = 0
                 model = torch.cat([recon[:, :5], openl], 1)
-                error = ((model - data["features"]) ** 2) * data["mask"]
-                recon_error += (error.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)).mean().item()
+                error = ((model - data["features"]) ** 2) * eval_mask
+                recon_error += (error.sum(dim=-1) / (eval_mask.sum(dim=-1) + 1e-8)).mean().item()
 
                 # Per-feature MSE accumulation
                 if _nf > 0:
-                    mask_post  = data["mask"][:, :5]   # [B, 5, F]
-                    mask_prior = data["mask"][:, 5:]    # [B, T-5, F]
+                    mask_post  = eval_mask[:, :5]
+                    mask_prior = eval_mask[:, 5:]
                     err_post  = ((recon[:, :5] - data["features"][:, :5]) ** 2) * mask_post
                     err_prior = ((openl       - data["features"][:, 5:]) ** 2) * mask_prior
 

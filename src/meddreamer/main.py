@@ -12,12 +12,7 @@ from sklearn.model_selection import train_test_split
 import src.meddreamer.utils.tools as tools
 from src.meddreamer.dreamer import Dreamer, MedDreamer
 
-try:
-    import sys as _sys
-    _sys.path.insert(0, "src")
-    from preprocessing.utils.columns import ALL_FEATURE_COLUMNS as _FEAT_NAMES
-except Exception:
-    _FEAT_NAMES = None
+_FEAT_NAMES = None  # loaded per-run from column_config.pkl (see main())
 
 def make_dataset(episodes, config):
     generator = tools.sample_episodes(episodes, config.train_batch_length, seed=config.seed)
@@ -29,8 +24,17 @@ def main(config):
     if config.deterministic_run:
         tools.enable_deterministic_run()
 
-    if _FEAT_NAMES is not None and not hasattr(config, "feature_names"):
-        config.feature_names = list(_FEAT_NAMES[: config.num_features])
+    # Load feature_names from column_config.pkl to match the exact episode column order.
+    # Using ALL_FEATURE_COLUMNS would give a different ordering and cause feature-name/data mismatches.
+    if not hasattr(config, "feature_names"):
+        col_cfg_path = os.path.join(config.datadir, config.dataset, "column_config.pkl")
+        if os.path.exists(col_cfg_path):
+            with open(col_cfg_path, "rb") as _f:
+                _col_cfg = pickle.load(_f)
+            config.feature_names = list(_col_cfg["feature_cols"][: config.num_features])
+            print(f"[main] feature_names loaded from column_config.pkl ({len(config.feature_names)} features)", flush=True)
+        else:
+            print(f"[main] WARNING: column_config.pkl not found at {col_cfg_path}; feature names will be generic", flush=True)
 
     logdir = pathlib.Path(config.logdir).expanduser() / f"{datetime.now().strftime('%Y-%m-%d/%H-%M-%S')}_{config.logname}_{config.dataset}_{config.task}"
 

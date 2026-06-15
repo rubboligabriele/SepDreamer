@@ -183,11 +183,13 @@ class WorldModel(nn.Module):
                 else:
                     preds[name] = pred
             losses = {}
+            rec_mask = data["mask"].clone()
+            rec_mask[..., -1] = 0  # bloc (last feature) is a step counter — exclude from rec loss
             for name, pred in preds.items():
                 loss = -pred.log_prob(data[name])
                 if name == "features":
-                    loss = loss * data["mask"]
-                    loss = loss.sum(dim=-1) / (data["mask"].sum(dim=-1) + 1e-8)
+                    loss = loss * rec_mask
+                    loss = loss.sum(dim=-1) / (rec_mask.sum(dim=-1) + 1e-8)
                 elif name == "reward":
                     terminal_weight = getattr(self._config, "terminal_reward_loss_weight", 20.0)
                     terminal_mask = data["is_terminal"].float()
