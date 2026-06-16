@@ -367,15 +367,15 @@ def build_patient_states_derived(
                     item[col] = r[col]
 
             # Mechvent interval.
-            item[C_MECHVENT] = pd.NA
+            # Default to 0 (not ventilated): mechvent is a clinical state, not a sporadic
+            # measurement. Absence of an active ventilation interval means not ventilated.
+            item[C_MECHVENT] = 0
             mv = stay_interval.get("mechvent")
             if mv is not None and len(mv) > 0:
                 active = mv[(mv[C_STARTTIME] <= t) & (t <= mv[C_ENDTIME])]
                 if len(active) > 0:
                     status = active.iloc[-1].get("mechvent", active.iloc[-1].get("ventilation_status", None))
-                    if pd.isna(status) or status is None:
-                        item[C_MECHVENT] = pd.NA
-                    else:
+                    if not (pd.isna(status) or status is None):
                         item[C_MECHVENT] = int(str(status).lower() != "none")
 
             # Weight interval.
