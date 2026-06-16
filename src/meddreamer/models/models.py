@@ -593,7 +593,7 @@ class ImagBehavior(nn.Module):
                 metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
                 metrics.update(self._value_opt(value_loss, self.value.parameters()))
 
-            # per compatibilità con il resto del codice
+            # return signature compatible with CASE 2 for caller
             return feat_hybrid, imag_state, action_hybrid, weights, metrics
 
         # -----------------------------------------
