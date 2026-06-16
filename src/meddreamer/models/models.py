@@ -477,35 +477,36 @@ class ImagBehavior(nn.Module):
             # Continuations aligned with feat_hybrid transitions
             cont_hybrid = torch.cat([cont_real, cont_imag], dim=0)
 
-            with torch.no_grad():
-                policy_dbg = self.actor(feat_hybrid.detach())
-                probs_dbg = policy_dbg.probs
-                argmax_dbg = probs_dbg.argmax(dim=-1)
+            if self._config.debug:
+                with torch.no_grad():
+                    policy_dbg = self.actor(feat_hybrid.detach())
+                    probs_dbg = policy_dbg.probs
+                    argmax_dbg = probs_dbg.argmax(dim=-1)
 
-                counts = torch.bincount(
-                    argmax_dbg.reshape(-1),
-                    minlength=self._config.num_actions,
-                ).float()
+                    counts = torch.bincount(
+                        argmax_dbg.reshape(-1),
+                        minlength=self._config.num_actions,
+                    ).float()
 
-                print("\n[POLICY INIT / PRE-UPDATE DEBUG]", flush=True)
-                print("pi_max_mean:", probs_dbg.max(dim=-1).values.mean().item(), flush=True)
-                print("pi_min_mean:", probs_dbg.min(dim=-1).values.mean().item(), flush=True)
-                print("entropy_mean:", policy_dbg.entropy().mean().item(), flush=True)
-                print("argmax_action:", torch.argmax(counts).item(), flush=True)
-                print("argmax_frac:", (counts.max() / counts.sum()).item(), flush=True)
-                print("action_argmax_counts:", counts.cpu().numpy().astype(int).tolist(), flush=True)
+                    print("\n[POLICY INIT / PRE-UPDATE DEBUG]", flush=True)
+                    print("pi_max_mean:", probs_dbg.max(dim=-1).values.mean().item(), flush=True)
+                    print("pi_min_mean:", probs_dbg.min(dim=-1).values.mean().item(), flush=True)
+                    print("entropy_mean:", policy_dbg.entropy().mean().item(), flush=True)
+                    print("argmax_action:", torch.argmax(counts).item(), flush=True)
+                    print("argmax_frac:", (counts.max() / counts.sum()).item(), flush=True)
+                    print("action_argmax_counts:", counts.cpu().numpy().astype(int).tolist(), flush=True)
 
-                sample_dbg = policy_dbg.sample()
-                sample_idx = sample_dbg.argmax(dim=-1)
+                    sample_dbg = policy_dbg.sample()
+                    sample_idx = sample_dbg.argmax(dim=-1)
 
-                sample_counts = torch.bincount(
-                    sample_idx.reshape(-1),
-                    minlength=self._config.num_actions,
-                ).float()
+                    sample_counts = torch.bincount(
+                        sample_idx.reshape(-1),
+                        minlength=self._config.num_actions,
+                    ).float()
 
-                print("sample_action:", torch.argmax(sample_counts).item(), flush=True)
-                print("sample_frac:", (sample_counts.max() / sample_counts.sum()).item(), flush=True)
-                print("sample_counts:", sample_counts.cpu().numpy().astype(int).tolist(), flush=True)
+                    print("sample_action:", torch.argmax(sample_counts).item(), flush=True)
+                    print("sample_frac:", (sample_counts.max() / sample_counts.sum()).item(), flush=True)
+                    print("sample_counts:", sample_counts.cpu().numpy().astype(int).tolist(), flush=True)
 
             # Convert continuation to scalar discount
             if self._config.cont_type == "mort3":
@@ -527,37 +528,38 @@ class ImagBehavior(nn.Module):
 
                 target_tensor = torch.stack(target, dim=1)
 
-                print("\n[TARGET DEBUG]", flush=True)
-                print("base mean:", base.mean().item(), flush=True)
-                print("target mean:", target_tensor.mean().item(), flush=True)
-                print("adv mean:", (target_tensor - base).mean().item(), flush=True)
-                print("base min/max:", base.min().item(), base.max().item(), flush=True)
-                print("target min/max:", target_tensor.min().item(), target_tensor.max().item(), flush=True)
+                if self._config.debug:
+                    print("\n[TARGET DEBUG]", flush=True)
+                    print("base mean:", base.mean().item(), flush=True)
+                    print("target mean:", target_tensor.mean().item(), flush=True)
+                    print("adv mean:", (target_tensor - base).mean().item(), flush=True)
+                    print("base min/max:", base.min().item(), base.max().item(), flush=True)
+                    print("target min/max:", target_tensor.min().item(), target_tensor.max().item(), flush=True)
 
-                print("\n[REAL VS IMAG]", flush=True)
-                print("real target mean:", target_tensor[:n_real].mean().item(), flush=True)
-                print("imag target mean:", target_tensor[n_real:].mean().item(), flush=True)
-                print("real value mean:", base[:n_real].mean().item(), flush=True)
-                print("imag value mean:", base[n_real:].mean().item(), flush=True)
-                print("real adv mean:", (target_tensor[:n_real] - base[:n_real]).mean().item(), flush=True)
-                print("imag adv mean:", (target_tensor[n_real:] - base[n_real:]).mean().item(), flush=True)
+                    print("\n[REAL VS IMAG]", flush=True)
+                    print("real target mean:", target_tensor[:n_real].mean().item(), flush=True)
+                    print("imag target mean:", target_tensor[n_real:].mean().item(), flush=True)
+                    print("real value mean:", base[:n_real].mean().item(), flush=True)
+                    print("imag value mean:", base[n_real:].mean().item(), flush=True)
+                    print("real adv mean:", (target_tensor[:n_real] - base[:n_real]).mean().item(), flush=True)
+                    print("imag adv mean:", (target_tensor[n_real:] - base[n_real:]).mean().item(), flush=True)
 
-                print("\n[REWARD/DISCOUNT DEBUG]", flush=True)
-                print("reward real mean:", reward_hybrid[:n_real].mean().item(), flush=True)
-                print("reward imag mean:", reward_hybrid[n_real:].mean().item(), flush=True)
-                print("discount real mean:", discount_hybrid[:n_real].mean().item(), flush=True)
-                print("discount imag mean:", discount_hybrid[n_real:].mean().item(), flush=True)
-                print("discount imag min/max:", discount_hybrid[n_real:].min().item(), discount_hybrid[n_real:].max().item(), flush=True)
+                    print("\n[REWARD/DISCOUNT DEBUG]", flush=True)
+                    print("reward real mean:", reward_hybrid[:n_real].mean().item(), flush=True)
+                    print("reward imag mean:", reward_hybrid[n_real:].mean().item(), flush=True)
+                    print("discount real mean:", discount_hybrid[:n_real].mean().item(), flush=True)
+                    print("discount imag mean:", discount_hybrid[n_real:].mean().item(), flush=True)
+                    print("discount imag min/max:", discount_hybrid[n_real:].min().item(), discount_hybrid[n_real:].max().item(), flush=True)
 
-                print("\n[TRAJECTORY DEBUG]", flush=True)
-                print("real length:", n_real, flush=True)
-                print("imag length:", reward_hybrid.shape[0] - n_real, flush=True)
-                print("total length:", reward_hybrid.shape[0], flush=True)
+                    print("\n[TRAJECTORY DEBUG]", flush=True)
+                    print("real length:", n_real, flush=True)
+                    print("imag length:", reward_hybrid.shape[0] - n_real, flush=True)
+                    print("total length:", reward_hybrid.shape[0], flush=True)
 
-                print("\n[CONTINUATION DEBUG]", flush=True)
-                print("cont imag mean:", cont_imag.mean().item(), flush=True)
-                print("cont imag min/max:", cont_imag.min().item(), cont_imag.max().item(), flush=True)
-                print("cont imag first trajectory:", cont_imag[:, 0].detach().cpu().numpy(), flush=True)
+                    print("\n[CONTINUATION DEBUG]", flush=True)
+                    print("cont imag mean:", cont_imag.mean().item(), flush=True)
+                    print("cont imag min/max:", cont_imag.min().item(), cont_imag.max().item(), flush=True)
+                    print("cont imag first trajectory:", cont_imag[:, 0].detach().cpu().numpy(), flush=True)
 
                 actor_loss, mets = self._compute_actor_loss_hybrid(
                     feat_hybrid,
@@ -974,26 +976,27 @@ class ImagBehavior(nn.Module):
             adv_used = adv_used / (adv_used.std().detach() + 1e-8)
             adv_used = adv_used.clamp(-5.0, 5.0)
 
-        with torch.no_grad():
-            adv_flat = adv.reshape(-1)
-            act_flat = action_hybrid.reshape(-1, self._config.num_actions)
-            act_idx = act_flat.argmax(-1)
+        if self._config.debug:
+            with torch.no_grad():
+                adv_flat = adv.reshape(-1)
+                act_flat = action_hybrid.reshape(-1, self._config.num_actions)
+                act_idx = act_flat.argmax(-1)
 
-            print("\n[ADV BY ACTION DEBUG]", flush=True)
+                print("\n[ADV BY ACTION DEBUG]", flush=True)
 
-            for a in range(self._config.num_actions):
-                mask = (act_idx == a)
+                for a in range(self._config.num_actions):
+                    mask = (act_idx == a)
 
-                if mask.sum() == 0:
-                    continue
+                    if mask.sum() == 0:
+                        continue
 
-                print(
-                    f"action={a:02d}",
-                    f"count={mask.sum().item()}",
-                    f"adv_mean={adv_flat[mask].mean().item():.4f}",
-                    f"adv_pos_frac={(adv_flat[mask] > 0).float().mean().item():.4f}",
-                    flush=True,
-                )
+                    print(
+                        f"action={a:02d}",
+                        f"count={mask.sum().item()}",
+                        f"adv_mean={adv_flat[mask].mean().item():.4f}",
+                        f"adv_pos_frac={(adv_flat[mask] > 0).float().mean().item():.4f}",
+                        flush=True,
+                    )
 
         if self._config.imag_gradient == "dynamics":
             actor_target = adv_used
