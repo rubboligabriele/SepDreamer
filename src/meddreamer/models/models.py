@@ -1084,6 +1084,17 @@ class ImagBehavior(nn.Module):
             metrics["entropy_real_mean"] = to_np(policy.entropy()[:n_real].mean())
             metrics["entropy_imag_mean"] = to_np(policy.entropy()[n_real:].mean())
 
+            # probability of action 0 in real vs imagined steps
+            metrics["pi_a0_real_mean"] = to_np(probs_real[..., 0].mean())
+            metrics["pi_a0_imag_mean"] = to_np(probs_imag[..., 0].mean())
+
+            # relative scale of bc_loss vs rl loss
+            if "bc_loss" in metrics:
+                bc_w = getattr(self._config, "bc_loss_weight", 0.0)
+                metrics["bc_loss_weighted"] = to_np(torch.tensor(metrics["bc_loss"] * bc_w))
+                metrics["actor_rl_loss"] = to_np(real_loss * getattr(self._config, "real_loss_weight", 1.0)
+                                                  + imag_loss * getattr(self._config, "imag_loss_weight", 1.0))
+
         return actor_loss, metrics
 
     def _update_slow_target(self):
