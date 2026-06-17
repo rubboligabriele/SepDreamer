@@ -1016,7 +1016,8 @@ class ImagBehavior(nn.Module):
             # BC loss: push policy toward clinician actions on real steps
             bc_weight = getattr(self._config, "bc_loss_weight", 0.0)
             if bc_weight > 0.0 and action_real_onehot is not None:
-                logp_bc = policy.log_prob(action_real_onehot[:n_real])
+                policy_real = self.actor(feat_hybrid[:n_real].detach())
+                logp_bc = policy_real.log_prob(action_real_onehot)
                 bc_loss = -logp_bc.mean()
                 actor_loss = actor_loss + bc_weight * bc_loss
                 metrics["bc_loss"] = to_np(bc_loss)
