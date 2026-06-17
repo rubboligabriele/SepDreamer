@@ -568,6 +568,7 @@ class ImagBehavior(nn.Module):
                     weights,
                     base,
                     n_real=n_real,
+                    action_real_onehot=action_real,
                 )
 
                 entropy_loss = -self._config.actor["entropy"] * actor_ent.mean()
@@ -941,6 +942,7 @@ class ImagBehavior(nn.Module):
         weights,
         base,
         n_real=None,
+        action_real_onehot=None,
     ):
         metrics = {}
         policy = self.actor(feat_hybrid.detach())
@@ -959,22 +961,9 @@ class ImagBehavior(nn.Module):
         else:
             adv = target - base
 
-        if n_real is not None:
-            adv_real = adv[:n_real]
-            adv_imag = adv[n_real:]
-
-            adv_real_used = adv_real - adv_real.mean().detach()
-            adv_real_used = adv_real_used / (adv_real_used.std().detach() + 1e-8)
-
-            adv_imag_used = adv_imag - adv_imag.mean().detach()
-            adv_imag_used = adv_imag_used / (adv_imag_used.std().detach() + 1e-8)
-
-            adv_used = torch.cat([adv_real_used, adv_imag_used], dim=0)
-            adv_used = adv_used.clamp(-5.0, 5.0)
-        else:
-            adv_used = adv - adv.mean().detach()
-            adv_used = adv_used / (adv_used.std().detach() + 1e-8)
-            adv_used = adv_used.clamp(-5.0, 5.0)
+        adv_used = adv - adv.mean().detach()
+        adv_used = adv_used / (adv_used.std().detach() + 1e-8)
+        adv_used = adv_used.clamp(-5.0, 5.0)
 
         if self._config.debug:
             with torch.no_grad():
@@ -1023,6 +1012,15 @@ class ImagBehavior(nn.Module):
             imag_weight = getattr(self._config, "imag_loss_weight", 0.2)
 
             actor_loss = real_weight * real_loss + imag_weight * imag_loss
+
+            # BC loss: push policy toward clinician actions on real steps
+            bc_weight = getattr(self._config, "bc_loss_weight", 0.0)
+            if bc_weight > 0.0 and action_real_onehot is not None:
+                logp_bc = policy.log_prob(action_real_onehot[:n_real])
+                bc_loss = -logp_bc.mean()
+                actor_loss = actor_loss + bc_weight * bc_loss
+                metrics["bc_loss"] = to_np(bc_loss)
+            metrics["bc_loss_weight"] = bc_weight
 
             metrics["actor_loss_real"] = to_np(real_loss)
             metrics["actor_loss_imag"] = to_np(imag_loss)
