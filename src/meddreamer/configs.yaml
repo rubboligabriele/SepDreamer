@@ -57,6 +57,7 @@ defaults:
     {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5} # pos_weight = (1-p_death)/p_death ≈ 0.78/0.22 ≈ 3.5
   behavior_model:
     type: 'lstm'
+    input_type: 'raw'
     hidden_size: 128
     num_layers: 2
     lr: 1e-4
@@ -100,6 +101,7 @@ behavior:
 
   behavior_model:
     type: 'lstm'
+    input_type: 'raw'
     hidden_size: 128
     num_layers: 2
     lr: 1e-4

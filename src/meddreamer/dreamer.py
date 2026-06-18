@@ -102,7 +102,10 @@ class Dreamer(nn.Module):
         return pi_ai_clin_list, pi_b_clin_list, reward_list, clin_action_list
 
     def _compute_pi_b_seq(self, full_states, phys_action, data):
-        feat_seq = self._wm.dynamics.get_feat(full_states)[:, :-1]
+        if self._behavior_policy.input_type == "raw":
+            feat_seq = data["features"][:, :-1]
+        else:
+            feat_seq = self._wm.dynamics.get_feat(full_states)[:, :-1]
         act_seq = phys_action[:, 1:]
         dist_b_seq = self._behavior_policy(feat_seq, data["is_first"][:, :-1])
         return torch.exp(dist_b_seq.log_prob(act_seq))
@@ -289,7 +292,6 @@ class Dreamer(nn.Module):
                                mortalities, value_estimates, true_mortality,
                                valid_episodes, imag_rewards, ai_sample_counts)
         metrics.update(ope_summary)
-        fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
         fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
 
         rows_mort, rows_phys, rows_ai, rows_sofa = [], [], [], []
@@ -780,7 +782,7 @@ class Dreamer(nn.Module):
 
         self._update_metrics({k: v for k, v in wm_metrics.items() if k != "step"})
 
-    def _eval(self, episodes):
+    def _eval(self, episodes, epoch=None):
         metrics = {}
         images = {}
         valid_episodes = 0
@@ -911,6 +913,9 @@ class Dreamer(nn.Module):
         images["mortality_vs_expected_return"] = fig
         images["mortality_vs_value"] = fig_value
 
+        if epoch is not None:
+            fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
+
         self._update_metrics(metrics)
         for name, value in images.items():
             self._images.setdefault(name, []).append(value)
@@ -928,7 +933,10 @@ class Dreamer(nn.Module):
             for stay_id, data in tqdm(episodes.items(), desc="Evaluating Behavior Policy"):
                 data = self._expand_episode(data)
                 post, embed, data = self._wm._load(data)
-                feat = self._wm.dynamics.get_feat(post)
+                if self._behavior_policy.input_type == "raw":
+                    feat = data["features"]
+                else:
+                    feat = self._wm.dynamics.get_feat(post)
 
                 feat_in = feat[:, :-1]
                 action_tgt = data["action"][:, 1:]
@@ -963,7 +971,10 @@ class Dreamer(nn.Module):
             for stay_id, data in tqdm(episodes.items(), desc="Eval behavior policy"):
                 data = self._expand_episode(data)
                 post, embed, data = self._wm._load(data)
-                feat = self._wm.dynamics.get_feat(post)
+                if self._behavior_policy.input_type == "raw":
+                    feat = data["features"]
+                else:
+                    feat = self._wm.dynamics.get_feat(post)
 
                 feat_in = feat[:, :-1]
                 action_tgt = data["action"][:, 1:]
@@ -1037,7 +1048,7 @@ class Dreamer(nn.Module):
             elif self._config.mode == "world_model":
                 self.eval_wm(self._eval_dataset, epoch)
             else:
-                self._eval(self._eval_dataset)
+                self._eval(self._eval_dataset, epoch=epoch)
 
         if epoch >= self._config.log_every and self._should_log(epoch):
             for name, values in self._metrics.items():
@@ -1064,7 +1075,10 @@ class Dreamer(nn.Module):
         self._wm.eval()
         with torch.no_grad():
             post, embed, data = self._wm._load(data)
-            feat = self._wm.dynamics.get_feat(post)
+            if self._behavior_policy.input_type == "raw":
+                feat = data["features"]
+            else:
+                feat = self._wm.dynamics.get_feat(post)
         self._update_metrics(self._behavior_policy.train_batch(feat, data["action"], data["is_first"]))
 
 

@@ -1111,13 +1111,16 @@ class BehaviorPolicy(nn.Module):
         super().__init__()
         self._config = config
 
-        if config.dyn_discrete:
+        bp = config.behavior_model
+        self.policy_type = bp.get("type", "lstm")
+        self.input_type = bp.get("input_type", "latent")
+
+        if self.input_type == "raw":
+            input_dim = config.num_features
+        elif config.dyn_discrete:
             input_dim = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
         else:
             input_dim = config.dyn_stoch + config.dyn_deter
-
-        bp = config.behavior_model
-        self.policy_type = bp.get("type", "lstm")
 
         hidden_size = bp.get("hidden_size", 16)
         num_layers = bp.get("num_layers", 1)
