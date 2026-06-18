@@ -57,8 +57,8 @@ defaults:
     {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5} # pos_weight = (1-p_death)/p_death ≈ 0.78/0.22 ≈ 3.5
   behavior_model:
     type: 'lstm'
-    hidden_size: 16
-    num_layers: 1
+    hidden_size: 128
+    num_layers: 2
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
@@ -100,8 +100,8 @@ behavior:
 
   behavior_model:
     type: 'lstm'
-    hidden_size: 16
-    num_layers: 1
+    hidden_size: 128
+    num_layers: 2
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
@@ -276,3 +276,13 @@ eval:
   dataset: mimic
   seed: 0
   device: cuda
+
+eval-behavior:
+  mode: eval-behavior
+  training: False
+  task: sepsis
+  dataset: mimic
+  seed: 0
+  device: cuda
+  behavior_ckptdir: 'your/own/path/to/behavior_checkpoints'
+  behavior_ckptepoch: 10000

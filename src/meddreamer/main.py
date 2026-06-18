@@ -144,6 +144,11 @@ def main(config):
                     tools.load_model(agent, "behavior_policy", config.ckptdir, epoch, config.device)
                     agent._eval_behavior(eval_eps)
 
+        elif config.mode == "eval-behavior":
+            tools.load_model(agent, "wm", config.ckptdir, config.ckptepoch, config.device)
+            tools.load_model(agent, "behavior_policy", config.behavior_ckptdir, config.behavior_ckptepoch, config.device)
+            agent.eval_behavior_policy(eval_eps, config.behavior_ckptepoch)
+
         elif config.mode == "policy_p1":
             if config.training:
                 tools.load_model(agent, "wm", config.ckptdir, config.ckptepoch, config.device)
