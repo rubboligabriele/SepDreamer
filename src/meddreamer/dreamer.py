@@ -292,9 +292,19 @@ class Dreamer(nn.Module):
         fig.savefig(os.path.join(self._logdir, f"mortality_vs_expected_return_{epoch}.png"))
         fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
 
-        data_out = {"mortality": full_mort, "phys_action": phys_actions, "ai_action": ai_actions}
-        if len(sofas) > 0:
-            data_out["sofa"] = sofas
+        rows_mort, rows_phys, rows_ai, rows_sofa = [], [], [], []
+        for i, (mort_arr, phys_arr, ai_arr) in enumerate(zip(full_mort, phys_actions, ai_actions)):
+            ep_mort = float(mort_arr.max()) if hasattr(mort_arr, "max") else float(mort_arr[0])
+            T = min(len(phys_arr), len(ai_arr))
+            for t in range(T):
+                rows_mort.append(ep_mort)
+                rows_phys.append(int(phys_arr[t]))
+                rows_ai.append(int(ai_arr[t]))
+                if len(sofas) > i:
+                    rows_sofa.append(float(sofas[i][t]) if t < len(sofas[i]) else float("nan"))
+        data_out = {"mortality": rows_mort, "phys_action": rows_phys, "ai_action": rows_ai}
+        if rows_sofa:
+            data_out["sofa"] = rows_sofa
         pd.DataFrame(data_out).to_csv(os.path.join(self._logdir, f"result_data_{epoch}.csv"), index=False)
 
         np.savez(
@@ -943,6 +953,49 @@ class Dreamer(nn.Module):
             "behavior_clin_prob_eval": total_clin_prob / total_steps,
             "behavior_entropy_eval": total_entropy / total_steps,
         })
+
+    def eval_behavior_policy(self, episodes, epoch):
+        """Evaluate behavior policy and save per-timestep CSV for analysis."""
+        rows = []
+        self._set_eval_mode()
+
+        with torch.no_grad():
+            for stay_id, data in tqdm(episodes.items(), desc="Eval behavior policy"):
+                data = self._expand_episode(data)
+                post, embed, data = self._wm._load(data)
+                feat = self._wm.dynamics.get_feat(post)
+
+                feat_in = feat[:, :-1]
+                action_tgt = data["action"][:, 1:]
+                is_first_in = data["is_first"][:, :-1]
+
+                if self._behavior_policy.policy_type == "lstm":
+                    dist = self._behavior_policy(feat_in, is_first_in)
+                else:
+                    dist = self._behavior_policy(feat_in)
+
+                probs = dist.probs                                             # (1, T-1, n_actions)
+                clin_ids = torch.argmax(action_tgt, dim=-1)                   # (1, T-1)
+                pi_b_clin = probs[0, torch.arange(probs.shape[1]), clin_ids[0]]  # (T-1,)
+                top1_hit = (torch.argmax(probs, dim=-1)[0] == clin_ids[0])
+                top3 = torch.topk(probs[0], k=3, dim=-1).indices              # (T-1, 3)
+                top3_hit = (top3 == clin_ids[0].unsqueeze(-1)).any(-1)
+                entropy = dist.entropy()[0]                                    # (T-1,)
+                mortality = float(data["mortality"][0, 0].item())
+
+                for t in range(feat_in.shape[1]):
+                    rows.append({
+                        "clin_action": int(clin_ids[0, t].item()),
+                        "pi_b_clin": float(pi_b_clin[t].item()),
+                        "top1_hit": int(top1_hit[t].item()),
+                        "top3_hit": int(top3_hit[t].item()),
+                        "entropy": float(entropy[t].item()),
+                        "mortality": mortality,
+                    })
+
+        out_path = os.path.join(self._logdir, f"bp_eval_{epoch}.csv")
+        pd.DataFrame(rows).to_csv(out_path, index=False)
+        print(f"Saved behavior policy eval to: {out_path}", flush=True)
 
     def _train_wm(self, data):
         post, _, mets = self._wm._train(data)
