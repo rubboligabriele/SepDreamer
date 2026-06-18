@@ -977,7 +977,8 @@ class Dreamer(nn.Module):
                 probs = dist.probs                                             # (1, T-1, n_actions)
                 clin_ids = torch.argmax(action_tgt, dim=-1)                   # (1, T-1)
                 pi_b_clin = probs[0, torch.arange(probs.shape[1]), clin_ids[0]]  # (T-1,)
-                top1_hit = (torch.argmax(probs, dim=-1)[0] == clin_ids[0])
+                bp_top1_action = torch.argmax(probs, dim=-1)[0]             # (T-1,)
+                top1_hit = (bp_top1_action == clin_ids[0])
                 top3 = torch.topk(probs[0], k=3, dim=-1).indices              # (T-1, 3)
                 top3_hit = (top3 == clin_ids[0].unsqueeze(-1)).any(-1)
                 entropy = dist.entropy()[0]                                    # (T-1,)
@@ -986,6 +987,7 @@ class Dreamer(nn.Module):
                 for t in range(feat_in.shape[1]):
                     rows.append({
                         "clin_action": int(clin_ids[0, t].item()),
+                        "bp_action": int(bp_top1_action[t].item()),
                         "pi_b_clin": float(pi_b_clin[t].item()),
                         "top1_hit": int(top1_hit[t].item()),
                         "top3_hit": int(top3_hit[t].item()),
