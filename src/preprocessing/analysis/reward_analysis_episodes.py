@@ -12,6 +12,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from src.meddreamer.utils.tools import plot_mortality_vs_value
 
 
 def load_episode(path: str) -> dict:
@@ -418,6 +419,17 @@ def main():
         os.path.join(args.output_dir, "hist_episode_intermediate_returns.png"),
         bins=args.bins,
     )
+
+    for values, xlabel, fname in [
+        (episode_returns_np,              "Episode Return",           "mortality_vs_episode_return.png"),
+        (episode_returns_no_first_np,     "Episode Return (no first)","mortality_vs_episode_return_no_first.png"),
+        (episode_intermediate_returns_np, "Intermediate Return",      "mortality_vs_intermediate_return.png"),
+        (episode_terminal_rewards_np,     "Terminal Reward",          "mortality_vs_terminal_reward.png"),
+    ]:
+        fig, _, _, _ = plot_mortality_vs_value(values, episode_mortalities_np, xlabel=xlabel)
+        fig.savefig(os.path.join(args.output_dir, fname), dpi=150)
+        plt.close(fig)
+        print(f"Saved: {fname}")
 
     print("\n=== REWARD ANALYSIS SUMMARY ===")
     print(f"Episodes analyzed: {len(episode_lengths)}")
