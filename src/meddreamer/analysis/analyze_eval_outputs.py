@@ -26,7 +26,7 @@ def confusion_matrix_5x5(y_true, y_pred, n_bins=5):
 
 def plot_confusion_matrix(cm, title, out_path):
     fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(cm, interpolation="nearest")
+    im = ax.imshow(cm, interpolation="nearest", origin="lower")
 
     ax.set_title(title)
     ax.set_xlabel("AI action bin")
@@ -41,6 +41,42 @@ def plot_confusion_matrix(cm, title, out_path):
     fig.colorbar(im, ax=ax)
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
+    plt.close()
+
+
+def plot_joint_action_heatmap(df, output_dir, n_bins=5):
+    """Replicates Figure 2 from the medDreamer paper: joint fluid x vaso distribution heatmap."""
+    df = add_fluid_vaso_columns(df.copy(), n_bins=n_bins)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    titles = ["Clinician", "MedDreamer"]
+    fluid_cols = ["phys_fluid", "ai_fluid"]
+    vaso_cols = ["phys_vaso", "ai_vaso"]
+    cmaps = ["Blues", "Purples"]
+
+    for ax, title, fcol, vcol, cmap in zip(axes, titles, fluid_cols, vaso_cols, cmaps):
+        heatmap = np.zeros((n_bins, n_bins))
+        for f, v in zip(df[fcol], df[vcol]):
+            heatmap[int(v), int(f)] += 1  # row=vaso, col=fluid
+
+        im = ax.imshow(
+            heatmap,
+            interpolation="nearest",
+            vmin=0,
+            vmax=heatmap.max(),
+            cmap=cmap,
+            origin="lower",
+        )
+        ax.set_title(title, fontsize=13)
+        ax.set_xlabel("IV Fluid", fontsize=11)
+        ax.set_ylabel("Vasopressor", fontsize=11)
+        ax.set_xticks(range(n_bins))
+        ax.set_yticks(range(n_bins))
+        fig.colorbar(im, ax=ax)
+
+    plt.suptitle("Joint Action Distribution: IV Fluid × Vasopressor", fontsize=13)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "joint_action_heatmap.png"), dpi=200)
     plt.close()
 
 
@@ -218,6 +254,8 @@ def analyze_separate_fluid_vaso_confusions(df, output_dir, n_bins=5):
         "Vasopressors: Physician vs AI",
         os.path.join(output_dir, "confusion_vasopressors.png"),
     )
+
+    plot_joint_action_heatmap(df, output_dir, n_bins=n_bins)
 
 
 def analyze_csv(csv_path, output_dir, n_bins=5):
