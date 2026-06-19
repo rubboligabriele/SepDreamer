@@ -117,6 +117,28 @@ def make_plots(df, output_dir):
     plt.savefig(os.path.join(output_dir, "bp_per_action.png"), dpi=200)
     plt.close()
 
+    # action distribution: clinician vs behavior top-1
+    if "bp_action" in df.columns:
+        clin_dist = df["clin_action"].value_counts(normalize=True).sort_index()
+        bp_dist = df["bp_action"].value_counts(normalize=True).sort_index()
+        actions = sorted(set(clin_dist.index).union(set(bp_dist.index)))
+        clin_vals = [clin_dist.get(a, 0.0) for a in actions]
+        bp_vals = [bp_dist.get(a, 0.0) for a in actions]
+        x_act = np.arange(len(actions))
+        width = 0.38
+        fig, ax = plt.subplots(figsize=(14, 5))
+        ax.bar(x_act - width / 2, clin_vals, width, label="Clinician")
+        ax.bar(x_act + width / 2, bp_vals, width, label="Behavior policy (top-1)")
+        ax.set_xticks(x_act)
+        ax.set_xticklabels(actions, rotation=90)
+        ax.set_xlabel("Action")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Action distribution: Clinician vs Behavior policy")
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "bp_action_distribution.png"), dpi=200)
+        plt.close()
+
     # IS ratio contribution: log10(1/pi_b)
     log_ratio = np.log10(1.0 / (pi_b + 1e-12))
     fig, ax = plt.subplots(figsize=(8, 4))
