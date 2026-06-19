@@ -29,6 +29,7 @@ class Dreamer(nn.Module):
         self._wm = models.WorldModel(config)
         self._task_behavior = models.ImagBehavior(config, self._wm)
         self._behavior_policy = models.BehaviorPolicy(config)
+        self._behavior_policy_loaded = False
 
     @staticmethod
     def _expand_episode(data):
@@ -53,7 +54,8 @@ class Dreamer(nn.Module):
     def _set_eval_mode(self):
         self._wm.eval()
         self._task_behavior.eval()
-        self._behavior_policy.eval()
+        if self._behavior_policy_loaded:
+            self._behavior_policy.eval()
 
     def _run_ai_rollout(self, full_states, T_roll):
         state_ai = {k: v[:, 4] for k, v in full_states.items()}
@@ -115,9 +117,6 @@ class Dreamer(nn.Module):
             self._metrics.setdefault(name, []).append(value)
 
     def _finalize_ope(self, ope_trajs, ai_episode_returns, phys_episode_returns, mortalities, value_estimates, true_mortality, valid_episodes, imag_rewards, ai_sample_counts):
-        tools.debug_ope_summary(ope_trajs)
-        ope_metrics = tools.finalize_ope(ope_trajs, debug=True, top_k=10)
-
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
         value_estimates = np.array(value_estimates, dtype=np.float32)
@@ -135,25 +134,30 @@ class Dreamer(nn.Module):
             value_estimates, mortalities, xlabel="Critic Value"
         )
 
-        ai_mortality, _ = tools.calculate_estimated_mortality(
-            ai_episode_returns, bin_centers, smoothed, smoothed_sem
-        )
-        true_mortality = true_mortality / valid_episodes
-        mortality_decrease = true_mortality - ai_mortality
-
         ope_summary = {
-            "ai_mortality": round(ai_mortality * 100, 2),
-            "true_mortality": round(true_mortality * 100, 2),
-            "mortality_decrease": round(mortality_decrease * 100, 2),
             "imag_episode_return": float(imag_rewards) / valid_episodes,
             "ai_episode_return": float(ai_episode_returns.mean()),
             "critic_value_mean": float(value_estimates.mean()),
             "critic_value_std": float(value_estimates.std()),
-            "wis": ope_metrics["wis"],
-            "wpdis": ope_metrics["wpdis"],
-            "cwpdis": ope_metrics["cwpdis"],
-            "ess": ope_metrics["ess"],
         }
+
+        if ope_trajs:
+            tools.debug_ope_summary(ope_trajs)
+            ope_metrics = tools.finalize_ope(ope_trajs, debug=True, top_k=10)
+            ai_mortality, _ = tools.calculate_estimated_mortality(
+                ai_episode_returns, bin_centers, smoothed, smoothed_sem
+            )
+            true_mortality = true_mortality / valid_episodes
+            mortality_decrease = true_mortality - ai_mortality
+            ope_summary.update({
+                "ai_mortality": round(ai_mortality * 100, 2),
+                "true_mortality": round(true_mortality * 100, 2),
+                "mortality_decrease": round(mortality_decrease * 100, 2),
+                "wis": ope_metrics["wis"],
+                "wpdis": ope_metrics["wpdis"],
+                "cwpdis": ope_metrics["cwpdis"],
+                "ess": ope_metrics["ess"],
+            })
 
         return ope_summary, fig, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates
 
@@ -222,7 +226,7 @@ class Dreamer(nn.Module):
                     self._wm.dynamics._debug_obs_counter = 0
                 full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first, debug=debug_now)
                 self._wm.dynamics._debug_mode = False
-                pi_b_seq = self._compute_pi_b_seq(full_states, phys_action, data)
+                pi_b_seq = self._compute_pi_b_seq(full_states, phys_action, data) if self._behavior_policy_loaded else None
 
                 init = {k: v[:, 4] for k, v in full_states.items()}
                 feat_init = self._wm.dynamics.get_feat(init)
@@ -251,9 +255,6 @@ class Dreamer(nn.Module):
                 ))
 
                 T_roll = prior["stoch"].shape[1]
-                pi_ai_clin_list, pi_b_clin_list, reward_list, clin_action_list = self._compute_ope_loop(
-                    full_states, phys_action, pi_b_seq, data
-                )
 
                 ai_episode_return, ai_actions_ep, ai_probs_np = self._run_ai_rollout(full_states, T_roll)
                 ai_actions.append(ai_actions_ep)
@@ -271,12 +272,16 @@ class Dreamer(nn.Module):
                 full_mort.append(tools.to_np(data["mortality"][0, 5:]))
                 ai_episode_returns.append(ai_episode_return)
 
-                traj_ope = tools.compute_ope_trajectory(
-                    pi_ai_clin_list, pi_b_clin_list, reward_list,
-                    gamma=self._config.discount, prob_eps=1e-6, rho_max=5.0, max_ope_steps=30,
-                )
-                if traj_ope is not None:
-                    ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))
+                if self._behavior_policy_loaded:
+                    pi_ai_clin_list, pi_b_clin_list, reward_list, clin_action_list = self._compute_ope_loop(
+                        full_states, phys_action, pi_b_seq, data
+                    )
+                    traj_ope = tools.compute_ope_trajectory(
+                        pi_ai_clin_list, pi_b_clin_list, reward_list,
+                        gamma=self._config.discount, prob_eps=1e-6, rho_max=5.0, max_ope_steps=30,
+                    )
+                    if traj_ope is not None:
+                        ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))
 
                 if data["mortality"].any():
                     true_mortality += 1
@@ -291,7 +296,8 @@ class Dreamer(nn.Module):
             self._finalize_ope(ope_trajs, ai_episode_returns, phys_episode_returns,
                                mortalities, value_estimates, true_mortality,
                                valid_episodes, imag_rewards, ai_sample_counts)
-        metrics.update(ope_summary)
+        if ope_summary:
+            metrics.update(ope_summary)
         fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
 
         rows_mort, rows_phys, rows_ai, rows_sofa = [], [], [], []
