@@ -159,7 +159,7 @@ p1-sepsis:
     {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
   imag_horizon: 15
   imag_time: 10
-  bc_loss_weight: 0.5
+  bc_loss_weight: 0.0
   task: 'sepsis'
   dataset: 'mimic'
   reward_key: 'reward'
