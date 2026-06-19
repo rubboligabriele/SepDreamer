@@ -659,7 +659,10 @@ class MLP(nn.Module):
         elif dist == "symlog_disc":
             dist = tools.DiscDist(logits=mean)
         elif dist == "symlog_mse":
-            dist = tools.SymlogDist(mean, agg="sum")
+            # scalar output (last dim == 1): sum to remove trailing dim
+            # vector output (last dim > 1): raw to keep per-element losses
+            agg = "sum" if mean.shape[-1] == 1 else "raw"
+            dist = tools.SymlogDist(mean, agg=agg)
         elif dist == "mse":
             dist = tools.MSEDist(mean)
         else:
