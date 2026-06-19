@@ -435,7 +435,9 @@ class ImagBehavior(nn.Module):
             feat_real = feat[:-1]                # (T-1, B, D) current real states s_t
             n_real = feat_real.shape[0]
             action_real = action[1:]             # (T-1, B, A) next real actions a_{t+1}
-            reward_real = reward_real_full[1:]   # (T-1, B, 1) next real rewards r_{t+1}
+            # use reward head on next posterior state (consistent with imagined part)
+            real_next_feat = feat[1:]
+            reward_real = self._world_model.heads["reward"](real_next_feat.detach()).mode()
             if self._config.cont_type == "mort3":
                 cont_real = cont_real_full[1:][..., 2:3]
             else:
