@@ -828,7 +828,7 @@ class Dreamer(nn.Module):
                 valid_episodes += 1
 
                 full_states, _ = self._wm.dynamics.observe(embed, phys_action, is_first, debug=False)
-                pi_b_seq = self._compute_pi_b_seq(full_states, phys_action, data)
+                pi_b_seq = self._compute_pi_b_seq(full_states, phys_action, data) if self._behavior_policy_loaded else None
 
                 states = {k: v[:, :5] for k, v in full_states.items()}
                 feat_post = self._wm.dynamics.get_feat(states)
@@ -870,9 +870,6 @@ class Dreamer(nn.Module):
                 ))
 
                 T_roll = prior["stoch"].shape[1]
-                pi_ai_clin_list, pi_b_clin_list, reward_list, clin_action_list = self._compute_ope_loop(
-                    full_states, phys_action, pi_b_seq, data
-                )
                 ai_episode_return, ai_actions_ep, ai_probs_np = self._run_ai_rollout(full_states, T_roll)
                 ai_actions.append(ai_actions_ep)
                 ai_sample_counts += np.bincount(ai_actions_ep, minlength=self._config.num_actions)
@@ -885,12 +882,16 @@ class Dreamer(nn.Module):
 
                 ai_episode_returns.append(ai_episode_return)
 
-                traj_ope = tools.compute_ope_trajectory(
-                    pi_ai_clin_list, pi_b_clin_list, reward_list,
-                    gamma=self._config.discount, prob_eps=1e-6, rho_max=5.0, max_ope_steps=30,
-                )
-                if traj_ope is not None:
-                    ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))
+                if self._behavior_policy_loaded:
+                    pi_ai_clin_list, pi_b_clin_list, reward_list, clin_action_list = self._compute_ope_loop(
+                        full_states, phys_action, pi_b_seq, data
+                    )
+                    traj_ope = tools.compute_ope_trajectory(
+                        pi_ai_clin_list, pi_b_clin_list, reward_list,
+                        gamma=self._config.discount, prob_eps=1e-6, rho_max=5.0, max_ope_steps=30,
+                    )
+                    if traj_ope is not None:
+                        ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))
 
                 phys_episode_returns.append(tools.to_np(data["reward"][:, 5:].sum(dim=1).squeeze()))
                 mortalities.append(tools.to_np(data["mortality"][:, 0].squeeze()))
@@ -915,7 +916,8 @@ class Dreamer(nn.Module):
             mortalities, value_estimates, true_mortality,
             valid_episodes, imag_rewards, ai_sample_counts
         )
-        metrics.update(ope_summary)
+        if self._behavior_policy_loaded:
+            metrics.update(ope_summary)
         images["mortality_vs_expected_return"] = fig
         images["mortality_vs_value"] = fig_value
 
