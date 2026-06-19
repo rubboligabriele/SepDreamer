@@ -102,8 +102,8 @@ behavior:
   behavior_model:
     type: 'lstm'
     input_type: 'raw'
-    hidden_size: 128
-    num_layers: 2
+    hidden_size: 16
+    num_layers: 1
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
@@ -288,3 +288,13 @@ eval-behavior:
   device: cuda
   behavior_ckptdir: 'your/own/path/to/behavior_checkpoints'
   behavior_ckptepoch: 10000
+  reward_head:
+    {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
+  behavior_model:
+    type: 'lstm'
+    input_type: 'raw'
+    hidden_size: 16
+    num_layers: 1
+    lr: 1e-4
+    eps: 1e-8
+    grad_clip: 100.0
