@@ -659,7 +659,7 @@ class MLP(nn.Module):
         elif dist == "symlog_disc":
             dist = tools.DiscDist(logits=mean)
         elif dist == "symlog_mse":
-            dist = tools.SymlogDist(mean)
+            dist = tools.SymlogDist(mean, agg="sum")
         elif dist == "mse":
             dist = tools.MSEDist(mean)
         else:
