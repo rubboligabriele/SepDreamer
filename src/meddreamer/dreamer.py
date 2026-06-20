@@ -1050,7 +1050,12 @@ class Dreamer(nn.Module):
         self._update_metrics(mets)
 
     def _eval_log(self, model_name, epoch):
-        if epoch >= self._config.eval_every and self._should_eval(epoch):
+        if epoch < 0:
+            return
+
+        eff_epoch = epoch
+
+        if eff_epoch >= self._config.eval_every and self._should_eval(eff_epoch):
             if self._config.mode == "behavior":
                 self._eval_behavior(self._eval_dataset)
             elif self._config.mode == "world_model":
@@ -1058,7 +1063,7 @@ class Dreamer(nn.Module):
             else:
                 self._eval(self._eval_dataset, epoch=epoch)
 
-        if epoch >= self._config.log_every and self._should_log(epoch):
+        if eff_epoch >= self._config.log_every and self._should_log(eff_epoch):
             for name, values in self._metrics.items():
                 if values:
                     if not isinstance(values[0], str):
@@ -1068,12 +1073,12 @@ class Dreamer(nn.Module):
                 if values:
                     self._logger.image(name, values)
                     self._images[name] = []
-            self._logger.write(epoch // self._config.log_every)
+            self._logger.write(eff_epoch // self._config.log_every)
             best_summary = tools.extract_best_from_json(self._logdir)
             with open(self._logdir / "best_metrics.jsonl", "w") as f:
                 json.dump(best_summary, f, indent=2)
 
-        if epoch >= self._config.save_every and self._should_save(epoch):
+        if eff_epoch >= self._config.save_every and self._should_save(eff_epoch):
             tools.save_model(self, model_name, self._logdir, epoch)
             with open(self._logdir / "parameters.jsonl", "w") as f:
                 json.dump(vars(self._config), f, indent=2)
@@ -1097,7 +1102,8 @@ class MedDreamer(Dreamer):
             self._eval_log("wm", epoch)
 
     def train_policy(self, epochs, use_history=True):
-        for epoch in trange(0, epochs + 1, desc="Training Policy"):
+        critic_warmup_steps = getattr(self._config, "critic_warmup_steps", 0)
+        for epoch in trange(-critic_warmup_steps, epochs + 1, desc="Training Policy"):
             states, _, data = self._wm._load(next(self._train_dataset))
             feat = self._wm.dynamics.get_feat(states)
             self._train_policy(states, feat, data, use_history)

@@ -458,6 +458,17 @@ class ImagBehavior(nn.Module):
             # Predicted rewards for imagined transitions
             reward_imag = self._world_model.heads["reward"](imag_next_feat).mode()
 
+            # Optionally replace real rewards and continuations with WM head predictions,
+            # aligning real and imagined segments to the same distribution (as in the paper).
+            # feat[1:] = next real states s_{t+1}, same alignment as reward_real_full[1:].
+            use_wm_heads_on_real = getattr(self._config, "use_wm_heads_on_real", False)
+            if use_wm_heads_on_real:
+                reward_real = self._world_model.heads["reward"](feat[1:]).mode()
+                if self._config.cont_type == "mort3":
+                    cont_real = self._world_model.heads["cont"](feat[1:]).probs[..., 2, None]
+                else:
+                    cont_real = self._world_model.heads["cont"](feat[1:]).mean
+
             # Predicted continuation for imagined transitions
             if self._config.cont_type == "mort3":
                 cont_imag = self._world_model.heads["cont"](imag_next_feat).probs[..., 2, None]
@@ -515,6 +526,9 @@ class ImagBehavior(nn.Module):
             else:
                 discount_hybrid = self._config.discount * cont_hybrid
 
+            critic_warmup_steps = getattr(self._config, "critic_warmup_steps", 0)
+            in_warmup = self._updates < critic_warmup_steps
+
             with tools.RequiresGrad(self.actor):
                 policy = self.actor(feat_hybrid.detach())
                 actor_ent = policy.entropy()
@@ -529,6 +543,56 @@ class ImagBehavior(nn.Module):
                 target_tensor = torch.stack(target, dim=1)
 
                 if self._config.debug:
+                    with torch.no_grad():
+                        # Print full episode trace for batch index 0 (one trajectory)
+                        b = 0
+                        T_real = n_real
+                        T_total = feat_hybrid.shape[0]
+                        T_imag = T_total - T_real
+
+                        policy_trace = self.actor(feat_hybrid[:, b:b+1].detach())
+                        probs_trace  = policy_trace.probs[:, 0]         # (T, A)
+                        ent_trace    = policy_trace.entropy()[:, 0]     # (T,)
+                        act_trace    = action_hybrid[:, b].argmax(-1)   # (T,)
+                        rew_trace    = reward_hybrid[:, b, 0]           # (T,)
+                        cnt_trace    = cont_hybrid[:, b, 0] if cont_hybrid.shape[-1] == 1 else cont_hybrid[:, b, 2]
+                        base_trace   = base[:, b, 0]                    # (T,)
+                        tgt_trace    = target_tensor[:, b, 0]           # (T,)
+                        adv_trace    = tgt_trace - base_trace           # (T,)
+
+                        header = (
+                            f"{'type':5s} {'step':4s} {'act':3s} "
+                            f"{'reward':8s} {'cont':5s} {'value':8s} "
+                            f"{'target':8s} {'adv':8s} {'p(a0)':7s} "
+                            f"{'p(amax)':7s} {'amax':4s} {'ent':6s}"
+                        )
+                        print("\n[EPISODE TRACE — batch idx 0]", flush=True)
+                        print(header, flush=True)
+                        print("-" * len(header), flush=True)
+
+                        for t in range(T_total):
+                            tag  = "real" if t < T_real else "imag"
+                            step = t if t < T_real else t - T_real
+                            a    = act_trace[t].item()
+                            r    = rew_trace[t].item()
+                            c    = cnt_trace[t].item()
+                            v    = base_trace[t].item()
+                            tg   = tgt_trace[t].item()
+                            dv   = adv_trace[t].item()
+                            p0   = probs_trace[t, 0].item()
+                            amax = probs_trace[t].argmax().item()
+                            pm   = probs_trace[t, amax].item()
+                            en   = ent_trace[t].item()
+                            print(
+                                f"{tag:5s} {step:4d} {a:3d} "
+                                f"{r:8.4f} {c:5.3f} {v:8.4f} "
+                                f"{tg:8.4f} {dv:8.4f} {p0:7.4f} "
+                                f"{pm:7.4f} {amax:4d} {en:6.3f}",
+                                flush=True,
+                            )
+
+                        print(flush=True)
+
                     print("\n[TARGET DEBUG]", flush=True)
                     print("base mean:", base.mean().item(), flush=True)
                     print("target mean:", target_tensor.mean().item(), flush=True)
@@ -561,19 +625,19 @@ class ImagBehavior(nn.Module):
                     print("cont imag min/max:", cont_imag.min().item(), cont_imag.max().item(), flush=True)
                     print("cont imag first trajectory:", cont_imag[:, 0].detach().cpu().numpy(), flush=True)
 
-                actor_loss, mets = self._compute_actor_loss_hybrid(
-                    feat_hybrid,
-                    action_hybrid,
-                    target,
-                    weights,
-                    base,
-                    n_real=n_real,
-                    action_real_onehot=action_real,
-                )
-
-                entropy_loss = -self._config.actor["entropy"] * actor_ent.mean()
-                actor_loss = actor_loss + entropy_loss
-                metrics.update(mets)
+                if not in_warmup:
+                    actor_loss, mets = self._compute_actor_loss_hybrid(
+                        feat_hybrid,
+                        action_hybrid,
+                        target,
+                        weights,
+                        base,
+                        n_real=n_real,
+                        action_real_onehot=action_real,
+                    )
+                    entropy_loss = -self._config.actor["entropy"] * actor_ent.mean()
+                    actor_loss = actor_loss + entropy_loss
+                    metrics.update(mets)
 
             with tools.RequiresGrad(self.value):
                 value_dist = self.value(feat_hybrid.detach())
@@ -591,9 +655,11 @@ class ImagBehavior(nn.Module):
             metrics.update(tools.tensorstats(target_tensor, "target"))
             metrics.update(tools.tensorstats(reward_hybrid, "hybrid_reward"))
             metrics["actor_entropy"] = to_np(actor_ent.mean())
+            metrics["critic_warmup"] = int(in_warmup)
 
             with tools.RequiresGrad(self):
-                metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
+                if not in_warmup:
+                    metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
                 metrics.update(self._value_opt(value_loss, self.value.parameters()))
 
             # return signature compatible with CASE 2 for caller

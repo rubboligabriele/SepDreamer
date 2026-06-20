@@ -142,7 +142,7 @@ p1-sepsis:
   cont_type: 'cont'
   batch_size: 64
   reward_EMA: True
-  debug: False
+  debug: True
   imag_gradient: 'reinforce'
   p1_type: 'combine'
   fm:
@@ -169,6 +169,8 @@ p1-sepsis:
 
   real_loss_weight: 1.0
   imag_loss_weight: 1.0
+  critic_warmup_steps: 0
+  use_wm_heads_on_real: true
 
 
 p2-sepsis:
