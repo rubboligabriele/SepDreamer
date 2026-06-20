@@ -198,6 +198,46 @@ def sample_episodes(episodes, length, seed=0):
 
         yield ret
 
+def sample_episodes_single(episodes, length, seed=0):
+    """Like sample_episodes but never concatenates multiple episodes.
+    Episodes shorter than length are skipped. For the policy p1, this
+    prevents lambda-return targets from crossing episode boundaries."""
+    np_random = np.random.RandomState(seed)
+
+    episode_list = list(episodes.values())
+    if len(episode_list) == 0:
+        raise ValueError("No episodes available.")
+
+    time_keys = [
+        "timestep",
+        "features",
+        "action",
+        "reward",
+        "mask",
+        "delta",
+        "is_first",
+        "is_terminal",
+        "discount",
+        "mortality",
+    ]
+
+    eligible = [(ep, len(ep["timestep"])) for ep in episode_list if len(ep["timestep"]) >= length]
+    if len(eligible) == 0:
+        raise ValueError(f"No episodes with length >= {length}.")
+
+    ep_lengths = np.array([l for _, l in eligible], dtype=np.float64)
+    p = ep_lengths / ep_lengths.sum()
+
+    while True:
+        idx = np_random.choice(len(eligible), p=p)
+        episode, total = eligible[idx]
+        index = int(np_random.randint(0, total - length + 1))
+        chunk = {k: episode[k][index:index + length].copy() for k in time_keys}
+        chunk["is_first"][:] = False
+        chunk["is_first"][0] = True
+        yield chunk
+
+
 class EpisodeSampler:
     def __init__(self, episodes, sample_size=100):
         self.episodes = episodes

@@ -14,8 +14,11 @@ from src.meddreamer.dreamer import Dreamer, MedDreamer
 
 _FEAT_NAMES = None  # loaded per-run from column_config.pkl (see main())
 
-def make_dataset(episodes, config):
-    generator = tools.sample_episodes(episodes, config.train_batch_length, seed=config.seed)
+def make_dataset(episodes, config, single_episode=False):
+    if single_episode:
+        generator = tools.sample_episodes_single(episodes, config.train_batch_length, seed=config.seed)
+    else:
+        generator = tools.sample_episodes(episodes, config.train_batch_length, seed=config.seed)
     dataset = tools.from_generator(generator, config.batch_size)
     return dataset
 
@@ -97,10 +100,14 @@ def main(config):
         # create a geenrator that samples from the training episodes with the specified batch length,
         # and then create a tf dataset from that generator with the specified batch size
         train_dataset = make_dataset(train_eps, config)
+        # For policy p1, use a sampler that never concatenates episodes to avoid
+        # lambda-return targets crossing patient boundaries.
+        train_dataset_p1 = make_dataset(train_eps, config, single_episode=True)
         print(f"Using full validation set for eval: {len(eval_eps)} episodes.", flush=True)
     else:
         train_eps = None
         train_dataset = None
+        train_dataset_p1 = None
         eval_eps = tools.load_split_episodes(eps_dir, test_stay_ids, cache_path=test_cache_path)
         print("Using test split for final evaluation.", flush=True)
 
@@ -158,6 +165,7 @@ def main(config):
                     agent._behavior_policy_loaded = True
                 else:
                     print("[policy_p1] No behavior policy loaded — OPE metrics will be skipped.", flush=True)
+                agent._train_dataset = train_dataset_p1
                 agent.train_policy(config.epochs, use_history=True)
             else:
                 tools.load_model(agent, "all", config.ckptdir, config.ckptepoch, config.device)
