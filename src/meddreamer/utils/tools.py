@@ -1025,6 +1025,94 @@ def plot_mortality_vs_value(value_values, mortality, num_bins=20, xlabel="Estima
     return fig, bin_centers, smoothed, smoothed_std
 
 
+def plot_critic_vs_feature(feature_values, critic_values, xlabel="Feature", num_bins=15):
+    """Bin feature_values and show mean critic value per bin with SEM shading.
+
+    Useful to check whether the critic assigns higher values to healthier states
+    (e.g., low SOFA → high V(s), high phys_return → high V(s)).
+    """
+    feature_values = np.array(feature_values, dtype=np.float64)
+    critic_values = np.array(critic_values, dtype=np.float64)
+
+    q01, q99 = np.quantile(feature_values, [0.01, 0.99])
+    mask = (feature_values >= q01) & (feature_values <= q99)
+    feature_values = feature_values[mask]
+    critic_values = critic_values[mask]
+
+    bin_edges = np.linspace(q01, q99, num_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_indices = np.digitize(feature_values, bin_edges) - 1
+
+    value_means = np.full(num_bins, np.nan)
+    value_sems = np.full(num_bins, np.nan)
+
+    for i in range(num_bins):
+        in_bin = bin_indices == i
+        if np.sum(in_bin) >= 2:
+            value_means[i] = np.mean(critic_values[in_bin])
+            value_sems[i] = sem(critic_values[in_bin])
+
+    valid = ~np.isnan(value_means)
+    bin_centers = bin_centers[valid]
+    value_means = value_means[valid]
+    value_sems = value_sems[valid]
+
+    smoothed = sliding_mean(value_means)
+    smoothed_sem = sliding_mean(value_sems)
+
+    fig, ax = plt.subplots(figsize=(5, 4.5), facecolor='white')
+    ax.plot(bin_centers, smoothed)
+    ax.fill_between(
+        bin_centers,
+        smoothed - smoothed_sem,
+        smoothed + smoothed_sem,
+        color='#ADD8E6',
+    )
+    ax.set_xlabel(xlabel, fontsize=15)
+    ax.set_ylabel("Critic Value V(s)", fontsize=15)
+    ax.tick_params(labelsize=15)
+    ax.grid()
+    fig.tight_layout()
+    plt.show()
+
+    return fig
+
+
+def plot_critic_vs_actual_return(critic_values, actual_returns, discount):
+    """Scatter V(s) vs actual discounted return from the same starting state.
+
+    The critic is well-calibrated when points cluster around the diagonal.
+    Returns fig and the Pearson correlation coefficient.
+    """
+    from scipy.stats import pearsonr
+    critic_values = np.array(critic_values, dtype=np.float64)
+    actual_returns = np.array(actual_returns, dtype=np.float64)
+
+    mask = np.isfinite(critic_values) & np.isfinite(actual_returns)
+    cv = critic_values[mask]
+    ar = actual_returns[mask]
+
+    corr, _ = pearsonr(cv, ar) if len(cv) > 2 else (float("nan"), None)
+
+    fig, ax = plt.subplots(figsize=(5, 4.5), facecolor="white")
+    ax.scatter(ar, cv, alpha=0.3, s=8, color="#4C72B0")
+
+    lo = min(ar.min(), cv.min())
+    hi = max(ar.max(), cv.max())
+    ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.5, label="diagonal")
+
+    ax.set_xlabel(f"Actual discounted return (γ={discount})", fontsize=13)
+    ax.set_ylabel("Critic V(s₄)", fontsize=13)
+    ax.set_title(f"Pearson r = {corr:.3f}", fontsize=13)
+    ax.tick_params(labelsize=12)
+    ax.grid(alpha=0.4)
+    ax.legend(fontsize=11)
+    fig.tight_layout()
+    plt.show()
+
+    return fig, corr
+
+
 def plot_recon_error_per_feature(
     feat_mse_post, feat_mse_prior, feat_names,
     feat_mse_post_death=None, feat_mse_prior_death=None,
