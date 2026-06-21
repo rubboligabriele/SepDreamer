@@ -134,25 +134,32 @@ class Dreamer(nn.Module):
             value_estimates, mortalities, xlabel="Critic Value"
         )
 
+        true_mortality_rate = true_mortality / max(valid_episodes, 1)
+        ai_action_argmax = int(ai_sample_counts.argmax())
+        ai_action_argmax_frac = float(ai_sample_counts.max() / max(ai_sample_counts.sum(), 1))
+
+        ai_mortality, _ = tools.calculate_estimated_mortality(
+            ai_episode_returns, bin_centers, smoothed, smoothed_sem
+        )
+        mortality_decrease = true_mortality_rate - ai_mortality
+
         ope_summary = {
             "imag_episode_return": float(imag_rewards) / valid_episodes,
             "ai_episode_return": float(ai_episode_returns.mean()),
+            "phys_episode_return": float(phys_episode_returns.mean()),
             "critic_value_mean": float(value_estimates.mean()),
             "critic_value_std": float(value_estimates.std()),
+            "true_mortality": round(true_mortality_rate * 100, 2),
+            "ai_mortality": round(ai_mortality * 100, 2),
+            "mortality_decrease": round(mortality_decrease * 100, 2),
+            "ai_action_argmax": ai_action_argmax,
+            "ai_action_argmax_frac": round(ai_action_argmax_frac * 100, 2),
         }
 
         if ope_trajs:
             tools.debug_ope_summary(ope_trajs)
             ope_metrics = tools.finalize_ope(ope_trajs, debug=True, top_k=10)
-            ai_mortality, _ = tools.calculate_estimated_mortality(
-                ai_episode_returns, bin_centers, smoothed, smoothed_sem
-            )
-            true_mortality = true_mortality / valid_episodes
-            mortality_decrease = true_mortality - ai_mortality
             ope_summary.update({
-                "ai_mortality": round(ai_mortality * 100, 2),
-                "true_mortality": round(true_mortality * 100, 2),
-                "mortality_decrease": round(mortality_decrease * 100, 2),
                 "wis": ope_metrics["wis"],
                 "wpdis": ope_metrics["wpdis"],
                 "cwpdis": ope_metrics["cwpdis"],

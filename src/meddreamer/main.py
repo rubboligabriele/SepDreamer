@@ -169,6 +169,12 @@ def main(config):
                 agent.train_policy(config.epochs, use_history=True)
             else:
                 tools.load_model(agent, "all", config.ckptdir, config.ckptepoch, config.device)
+                behavior_ckptdir = getattr(config, "behavior_ckptdir", None)
+                if behavior_ckptdir and behavior_ckptdir != "your/own/path/to/behavior_checkpoints":
+                    tools.load_model(agent, "behavior_policy", behavior_ckptdir, config.behavior_ckptepoch, config.device)
+                    agent._behavior_policy_loaded = True
+                else:
+                    print("[policy_p1] No behavior policy loaded — OPE metrics will be skipped.", flush=True)
                 agent.eval(eval_eps, config.ckptepoch)
 
         elif config.mode == "policy_p2":
