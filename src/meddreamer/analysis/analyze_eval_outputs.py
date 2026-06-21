@@ -26,7 +26,7 @@ def confusion_matrix_5x5(y_true, y_pred, n_bins=5):
 
 def plot_confusion_matrix(cm, title, out_path):
     fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(cm, interpolation="nearest", origin="lower")
+    im = ax.imshow(cm, interpolation="nearest", origin="lower", cmap="Blues")
 
     ax.set_title(title)
     ax.set_xlabel("AI action bin")
