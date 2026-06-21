@@ -944,7 +944,7 @@ def load_model(agent, model_name, dir, epoch, device, actor_lr=None, value_lr=No
             map_location=device,
             weights_only=False
         )
-        agent.load_state_dict(items_to_load["agent_state_dict"])
+        agent.load_state_dict(items_to_load["agent_state_dict"], strict=False)
         if actor_lr:
             items_to_load["optims_state_dict"]['_task_behavior._actor_opt._opt']['param_groups'][0]['lr'] = actor_lr
             items_to_load["optims_state_dict"]['_task_behavior._value_opt._opt']['param_groups'][0]['lr'] = value_lr
