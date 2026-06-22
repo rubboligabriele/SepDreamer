@@ -248,19 +248,6 @@ class WorldModel(nn.Module):
             print("is_first shape:", tuple(is_first.shape))
             print("delta shape:", tuple(data["delta"].shape) if "delta" in data else None)
 
-            max_t = min(10, T)
-            for t in range(max_t):
-                a_idx = int(torch.argmax(action[0, t]).item())
-                r_val = float(data["reward"][0, t].item())
-                first_val = float(is_first[0, t].item())
-                print(
-                    f"t={t:02d} "
-                    f"action_idx={a_idx:02d} "
-                    f"reward={r_val:8.4f} "
-                    f"is_first={first_val:.0f} "
-                    f"embed_norm={float(embed[0, t].norm().item()):.4f}"
-                )
-
         if debug:
             self.dynamics._debug_mode = True
             self.dynamics._debug_obs_counter = 0
@@ -273,20 +260,6 @@ class WorldModel(nn.Module):
         self.dynamics._debug_mode = False
 
         post = {k: v.detach() for k, v in post.items()}
-
-        if debug:
-            print("\n[LOAD DEBUG - POST STATE SUMMARY]")
-            for k, v in post.items():
-                print(k, tuple(v.shape))
-            max_t = min(5, T)
-            for t in range(max_t):
-                deter_norm = float(post["deter"][0, t].norm().item())
-                stoch_norm = float(post["stoch"][0, t].float().norm().item())
-                print(
-                    f"post t={t:02d} "
-                    f"deter_norm={deter_norm:.4f} "
-                    f"stoch_norm={stoch_norm:.4f}"
-                )
 
         return post, embed, data
 
@@ -590,12 +563,6 @@ class ImagBehavior(nn.Module):
 
                         print(flush=True)
 
-                    print("\n[REWARD/DISCOUNT DEBUG]", flush=True)
-                    print("reward real mean:", reward_hybrid[:n_real].mean().item(), flush=True)
-                    print("reward imag mean:", reward_hybrid[n_real:].mean().item(), flush=True)
-                    print("discount real mean:", discount_hybrid[:n_real].mean().item(), flush=True)
-                    print("discount imag mean:", discount_hybrid[n_real:].mean().item(), flush=True)
-                    print("discount imag min/max:", discount_hybrid[n_real:].min().item(), discount_hybrid[n_real:].max().item(), flush=True)
 
                 if not in_warmup:
                     actor_loss, mets = self._compute_actor_loss_hybrid(
@@ -623,6 +590,36 @@ class ImagBehavior(nn.Module):
 
                 value_loss_per_step = value_loss  # before mean, shape (T, B) or (T*B,)
                 value_loss = torch.mean(weights * value_loss[..., None] if value_loss.ndim == 2 else weights * value_loss)
+
+                if getattr(self._config.critic, "repl_loss", False):
+                    delta_all = swap(data["delta"])      # (T, B, 1)
+                    delta_real = delta_all[1:]           # aligned with feat_real (T-1, B, 1)
+                    pcont_real = torch.exp(-delta_real / 5)
+
+                    repl_val_dist = self.value(feat_real.detach())
+                    slow_val_real = self._slow_value(feat_real.detach()).mode().detach()
+
+                    repl_ret = tools.lambda_return(
+                        reward=reward_real,
+                        value=slow_val_real,
+                        pcont=pcont_real,
+                        bootstrap=slow_val_real[-1],
+                        lambda_=self._config.discount_lambda,
+                        axis=0,
+                    )
+                    repl_ret = torch.stack(repl_ret, dim=1).detach()
+
+                    repl_offset, repl_scale = self._valuenorm.update(repl_ret)
+                    repl_ret_normed = (repl_ret - repl_offset) / repl_scale
+
+                    slow_reg = getattr(self._config.critic, "slow_reg", 1.0)
+                    rep_loss_weight = getattr(self._config.critic, "rep_loss_weight", 1.0)
+                    repl_loss = rep_loss_weight * torch.mean(
+                        (repl_val_dist.mode() - repl_ret_normed.detach()) ** 2
+                        + slow_reg * (slow_val_real - repl_ret_normed.detach()) ** 2
+                    )
+                    value_loss = value_loss + repl_loss
+                    metrics["repl_loss"] = to_np(repl_loss)
 
                 if self._config.debug:
                     with torch.no_grad():
@@ -995,7 +992,7 @@ class ImagBehavior(nn.Module):
         bootstrap_feat      = state after the last transition
         """
         value = self.value(feat_hybrid).mode()
-        bootstrap = self._slow_value(bootstrap_feat).mode().detach()
+        bootstrap = value[-1].detach()
 
         target = tools.lambda_return(
             reward=reward_hybrid,
@@ -1041,31 +1038,8 @@ class ImagBehavior(nn.Module):
         else:
             adv = target - base
 
-        adv_used = adv - adv.mean().detach()
-        adv_used = adv_used / (adv_used.std().detach() + 1e-8)
-        adv_used = adv_used.clamp(-5.0, 5.0)
+        adv_used = adv
 
-        if self._config.debug:
-            with torch.no_grad():
-                adv_flat = adv.reshape(-1)
-                act_flat = action_hybrid.reshape(-1, self._config.num_actions)
-                act_idx = act_flat.argmax(-1)
-
-                print("\n[ADV BY ACTION DEBUG]", flush=True)
-
-                for a in range(self._config.num_actions):
-                    mask = (act_idx == a)
-
-                    if mask.sum() == 0:
-                        continue
-
-                    print(
-                        f"action={a:02d}",
-                        f"count={mask.sum().item()}",
-                        f"adv_mean={adv_flat[mask].mean().item():.4f}",
-                        f"adv_pos_frac={(adv_flat[mask] > 0).float().mean().item():.4f}",
-                        flush=True,
-                    )
 
         if self._config.imag_gradient == "dynamics":
             actor_target = adv_used
@@ -1088,25 +1062,20 @@ class ImagBehavior(nn.Module):
             real_loss = actor_loss[:n_real].mean()
             imag_loss = actor_loss[n_real:].mean()
 
-            real_weight = getattr(self._config, "real_loss_weight", 1.0)
-            imag_weight = getattr(self._config, "imag_loss_weight", 0.2)
-
-            actor_loss = real_weight * real_loss + imag_weight * imag_loss
-
             # BC loss: push policy toward clinician actions on real steps
             bc_weight = getattr(self._config, "bc_loss_weight", 0.0)
             if bc_weight > 0.0 and action_real_onehot is not None:
                 policy_real = self.actor(feat_hybrid[:n_real].detach())
                 logp_bc = policy_real.log_prob(action_real_onehot)
                 bc_loss = -logp_bc.mean()
-                actor_loss = actor_loss + bc_weight * bc_loss
+                actor_loss = actor_loss.mean() + bc_weight * bc_loss
                 metrics["bc_loss"] = to_np(bc_loss)
+            else:
+                actor_loss = actor_loss.mean()
             metrics["bc_loss_weight"] = bc_weight
 
             metrics["actor_loss_real"] = to_np(real_loss)
             metrics["actor_loss_imag"] = to_np(imag_loss)
-            metrics["real_loss_weight"] = real_weight
-            metrics["imag_loss_weight"] = imag_weight
         else:
             actor_loss = actor_loss.mean()
 
@@ -1168,12 +1137,9 @@ class ImagBehavior(nn.Module):
             metrics["pi_a0_real_mean"] = to_np(probs_real[..., 0].mean())
             metrics["pi_a0_imag_mean"] = to_np(probs_imag[..., 0].mean())
 
-            # relative scale of bc_loss vs rl loss
             if "bc_loss" in metrics:
                 bc_w = getattr(self._config, "bc_loss_weight", 0.0)
                 metrics["bc_loss_weighted"] = to_np(torch.tensor(metrics["bc_loss"] * bc_w))
-                metrics["actor_rl_loss"] = to_np(real_loss * getattr(self._config, "real_loss_weight", 1.0)
-                                                  + imag_loss * getattr(self._config, "imag_loss_weight", 1.0))
 
         return actor_loss, metrics
 

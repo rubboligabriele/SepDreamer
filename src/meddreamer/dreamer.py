@@ -277,6 +277,49 @@ class Dreamer(nn.Module):
             plt.close(fig)
         return corr
 
+    def _plot_critic_by_step(self, critic_by_step, epoch, metrics):
+        import matplotlib.pyplot as plt
+        from scipy.stats import pearsonr
+
+        steps = sorted(critic_by_step.keys())
+        correlations, ns = [], []
+        for t in steps:
+            vals = np.array(critic_by_step[t]["values"], dtype=np.float32)
+            morts = np.array(critic_by_step[t]["mortalities"], dtype=np.float32)
+            if len(vals) < 10 or morts.std() < 1e-6:
+                correlations.append(float("nan"))
+                ns.append(0)
+                continue
+            r, _ = pearsonr(vals, morts)
+            correlations.append(r)
+            ns.append(len(vals))
+
+        valid = [(t, r) for t, r in zip(steps, correlations) if not np.isnan(r)]
+        if not valid:
+            return
+        best_t, best_r = max(valid, key=lambda x: abs(x[1]))
+        metrics["critic_mortality_corr_best_step"] = best_t
+        metrics["critic_mortality_corr_best_r"] = round(float(best_r), 4)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(steps, correlations, marker="o")
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_xlabel("Step t")
+        ax.set_ylabel("Pearson r  (V(s_t) vs mortality)")
+        ax.set_title(f"Critic value predictiveness of mortality by step  [epoch {epoch}]")
+        plt.tight_layout()
+        fig.savefig(os.path.join(self._logdir, f"critic_mortality_corr_by_step_{epoch}.png"), dpi=150)
+        plt.close(fig)
+
+        vals_best = np.array(critic_by_step[best_t]["values"], dtype=np.float32)
+        morts_best = np.array(critic_by_step[best_t]["mortalities"], dtype=np.float32)
+        fig2, _, _, _ = tools.plot_mortality_vs_value(
+            vals_best, morts_best,
+            xlabel=f"Critic V(s_{best_t})  [best step, r={best_r:.3f}]",
+        )
+        fig2.savefig(os.path.join(self._logdir, f"mortality_vs_critic_best_step{best_t}_{epoch}.png"), dpi=150)
+        plt.close(fig2)
+
     def train(self, epochs):
         for epoch in trange(0, epochs + 1, desc="Training"):
             post, _, data = self._wm._load(next(self._train_dataset))
@@ -303,6 +346,7 @@ class Dreamer(nn.Module):
         lambda_return_targets = []
         phi_all_t = []
         value_all_t = []
+        critic_by_step = {}  # t -> list of (V(s_t), mortality) pairs
 
         self._set_eval_mode()
         first_debug_done = False
@@ -339,6 +383,17 @@ class Dreamer(nn.Module):
                 value_estimates.append(float(tools.to_np(self._get_policy_value_estimate(feat_init.detach()).squeeze())))
                 lambda_return_targets.append(self._compute_lambda_return_at_t4(full_states, data))
                 self._collect_all_timesteps(full_states, data, phi_all_t, value_all_t)
+
+                mortality = float(tools.to_np(data["mortality"][0, 0]))
+                feat_all = self._wm.dynamics.get_feat(full_states)  # (B, T, D)
+                for t in range(4, min(T, 30)):
+                    v = float(tools.to_np(
+                        self._task_behavior.value(feat_all[:, t]).mode().squeeze()
+                    ))
+                    if t not in critic_by_step:
+                        critic_by_step[t] = {"values": [], "mortalities": []}
+                    critic_by_step[t]["values"].append(v)
+                    critic_by_step[t]["mortalities"].append(mortality)
 
                 if not debug_now:
                     self._wm.dynamics._debug_img_mode = False
@@ -412,6 +467,9 @@ class Dreamer(nn.Module):
         )
         if corr is not None:
             metrics["critic_return_corr"] = round(float(corr), 4)
+
+        if critic_by_step:
+            self._plot_critic_by_step(critic_by_step, epoch, metrics)
 
         rows_mort, rows_phys, rows_ai, rows_sofa = [], [], [], []
         for i, (mort_arr, phys_arr, ai_arr) in enumerate(zip(full_mort, phys_actions, ai_actions)):
@@ -563,7 +621,7 @@ class Dreamer(nn.Module):
                 for a in range(self._config.num_actions):
                     action_a = torch.zeros((1, self._config.num_actions), device=self._config.device, dtype=torch.float32)
                     action_a[:, a] = 1.0
-                    next_state_a = self._wm.dynamics.img_step(state_probe, action_a, sample=False)
+                    next_state_a = self._wm.dynamics.img_step(state_probe, action_a, sample=True)
                     feat_a = self._wm.dynamics.get_feat(next_state_a)
                     rewards_by_action.append(float(self._wm.heads["reward"](feat_a).mode().squeeze().item()))
                     cont_by_action.append(float(self._wm.heads["cont"](feat_a).mode().squeeze().item()))
@@ -597,7 +655,7 @@ class Dreamer(nn.Module):
                         action_a[:, a] = 1.0
                         rewards_roll, conts_roll = [], []
                         for h in range(5):
-                            s = self._wm.dynamics.img_step(s, action_a, sample=False)
+                            s = self._wm.dynamics.img_step(s, action_a, sample=True)
                             feat_h = self._wm.dynamics.get_feat(s)
                             rewards_roll.append(float(self._wm.heads["reward"](feat_h).mode().squeeze().item()))
                             conts_roll.append(float(self._wm.heads["cont"](feat_h).mode().squeeze().item()))
