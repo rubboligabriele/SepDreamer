@@ -116,8 +116,9 @@ class Dreamer(nn.Module):
         for name, value in metrics.items():
             self._metrics.setdefault(name, []).append(value)
 
-    def _finalize_ope(self, ope_trajs, ai_episode_returns, phys_episode_returns, mortalities, value_estimates, true_mortality, valid_episodes, imag_rewards, ai_sample_counts):
+    def _finalize_ope(self, ope_trajs, ai_episode_returns, phys_episode_returns, wm_phys_returns, mortalities, value_estimates, true_mortality, valid_episodes, imag_rewards, ai_sample_counts):
         phys_episode_returns = np.array(phys_episode_returns, dtype=np.float32)
+        wm_phys_returns = np.array(wm_phys_returns, dtype=np.float32)
         ai_episode_returns = np.array(ai_episode_returns, dtype=np.float32)
         value_estimates = np.array(value_estimates, dtype=np.float32)
         mortalities = np.array(mortalities, dtype=np.float32)
@@ -130,6 +131,10 @@ class Dreamer(nn.Module):
         fig, bin_centers, smoothed, smoothed_sem = tools.plot_mortality_vs_value(
             phys_episode_returns, mortalities, xlabel="Expected Return"
         )
+        # calibration curve built on WM prior return (same scale as ai_episode_returns)
+        fig_wm, wm_bin_centers, wm_smoothed, wm_smoothed_sem = tools.plot_mortality_vs_value(
+            wm_phys_returns, mortalities, xlabel="WM Clinician Return"
+        )
         fig_value, _, _, _ = tools.plot_mortality_vs_value(
             value_estimates, mortalities, xlabel="Critic Value"
         )
@@ -139,7 +144,7 @@ class Dreamer(nn.Module):
         ai_action_argmax_frac = float(ai_sample_counts.max() / max(ai_sample_counts.sum(), 1))
 
         ai_mortality, _ = tools.calculate_estimated_mortality(
-            ai_episode_returns, bin_centers, smoothed, smoothed_sem
+            ai_episode_returns, wm_bin_centers, wm_smoothed, wm_smoothed_sem
         )
         mortality_decrease = true_mortality_rate - ai_mortality
 
@@ -166,7 +171,7 @@ class Dreamer(nn.Module):
                 "ess": ope_metrics["ess"],
             })
 
-        return ope_summary, fig, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates
+        return ope_summary, fig, fig_wm, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates
 
     def _get_policy_value_estimate(self, feat):
         return self._task_behavior.value(feat).mode().squeeze(-1)
@@ -178,6 +183,37 @@ class Dreamer(nn.Module):
         powers = torch.pow(torch.tensor(gamma, device=rewards.device),
                            torch.arange(len(rewards), device=rewards.device, dtype=torch.float32))
         return float((rewards * powers).sum().item())
+
+    def _compute_lambda_return_at_t4(self, full_states, data):
+        """Compute lambda-return target at t=4 using full real episode states.
+
+        Uses the same formula as training: current critic for intermediate v_t,
+        slow critic for the final bootstrap.
+        """
+        states_from4 = {k: v[:, 4:] for k, v in full_states.items()}
+        feat = self._wm.dynamics.get_feat(states_from4)          # (B, T-4, D)
+        feat_T = feat.permute(1, 0, 2)                           # (T-4, B, D)
+
+        reward   = data["reward"][:, 4:].permute(1, 0, 2)        # (T-4, B, 1)
+        cont     = data["cont"][:, 4:].permute(1, 0, 2)          # (T-4, B, 1)
+        discount = self._config.discount * cont
+
+        value    = self._task_behavior.value(feat_T).mode()      # (T-4, B, 1)
+        bootstrap_feat = {k: v[:, -1] for k, v in states_from4.items()}
+        bootstrap = self._task_behavior._slow_value(
+            self._wm.dynamics.get_feat(bootstrap_feat)
+        ).mode().detach()                                        # (B, 1)
+
+        target = tools.lambda_return(
+            reward=reward,
+            value=value,
+            pcont=discount,
+            bootstrap=bootstrap,
+            lambda_=self._config.discount_lambda,
+            axis=0,
+        )                                                        # tuple of (B, 1) tensors, one per step
+        target_tensor = torch.stack(target, dim=0)              # (T-4, B, 1)
+        return float(target_tensor[0, 0, 0].item())
 
     # Feature indices in STATE_COLUMNS order (from column_config.pkl) for medR potential.
     _MEDR_FEAT_INDICES = {
@@ -217,7 +253,7 @@ class Dreamer(nn.Module):
             phi_all.append(phi)
             value_all.append(float(values[t].item()))
 
-    def _save_critic_feature_plots(self, value_estimates, phys_returns, actual_disc_returns, epoch, prefix="",
+    def _save_critic_feature_plots(self, value_estimates, lambda_return_targets, epoch, prefix="",
                                     phi_all_t=None, value_all_t=None):
         import matplotlib.pyplot as plt
         value_estimates = np.array(value_estimates, dtype=np.float32)
@@ -225,17 +261,12 @@ class Dreamer(nn.Module):
         save = lambda fig, name: fig.savefig(
             os.path.join(self._logdir, f"critic_vs_{name}{prefix}_{epoch}.png")
         )
-        # Per-episode plots (V(s_4) per episode)
-        if len(phys_returns) == n and n > 10:
-            fig = tools.plot_critic_vs_feature(phys_returns, value_estimates, xlabel="Phys Episode Return")
-            save(fig, "phys_return")
-            plt.close(fig)
         corr = None
-        if len(actual_disc_returns) == n and n > 10:
+        if len(lambda_return_targets) == n and n > 10:
             fig, corr = tools.plot_critic_vs_actual_return(
-                value_estimates, actual_disc_returns, self._config.discount
+                value_estimates, lambda_return_targets, self._config.discount
             )
-            save(fig, "actual_return")
+            save(fig, "lambda_return")
             plt.close(fig)
         # All-timestep plot: V(s_t) vs phi(s_t) — direct test of whether the critic
         # understands the medR potential structure (phi high = near ceiling = lower V expected).
@@ -258,6 +289,7 @@ class Dreamer(nn.Module):
         imag_rewards = 0
         true_mortality = 0
         phys_episode_returns = []
+        wm_phys_returns = []
         ai_episode_returns = []
         value_estimates = []
         ai_actions = []
@@ -268,7 +300,7 @@ class Dreamer(nn.Module):
         valid_episodes = 0
         ope_trajs = []
         ai_sample_counts = np.zeros(self._config.num_actions, dtype=np.int64)
-        actual_disc_returns = []
+        lambda_return_targets = []
         phi_all_t = []
         value_all_t = []
 
@@ -291,17 +323,6 @@ class Dreamer(nn.Module):
                 valid_episodes += 1
                 debug_now = not first_debug_done
 
-                if debug_now:
-                    print(f"\n{'='*80}")
-                    print(f"[EVAL DEBUG] FIRST STAY = {stay_id}")
-                    print(f"{'='*80}\n[FIRST STAY ALIGNMENT TABLE]")
-                    for t in range(min(12, phys_action.shape[1])):
-                        print(
-                            f"t={t:02d} action_idx={int(torch.argmax(phys_action[0, t]).item()):02d} "
-                            f"reward={float(data['reward'][0, t].item()):8.4f} "
-                            f"mortality={float(data['mortality'][0, t].item()):.0f}"
-                        )
-
                 features = tools.bt_flatten(data["features"])
                 delta = tools.bt_flatten(data["delta"]) if self._config.fm["use_fm"] else None
                 embed = tools.bt_unflatten(self._wm.encoder(features, delta), B, T)
@@ -316,20 +337,18 @@ class Dreamer(nn.Module):
                 init = {k: v[:, 4] for k, v in full_states.items()}
                 feat_init = self._wm.dynamics.get_feat(init)
                 value_estimates.append(float(tools.to_np(self._get_policy_value_estimate(feat_init.detach()).squeeze())))
-                actual_disc_returns.append(self._compute_disc_return(data, t_start=4))
+                lambda_return_targets.append(self._compute_lambda_return_at_t4(full_states, data))
                 self._collect_all_timesteps(full_states, data, phi_all_t, value_all_t)
 
-                if debug_now:
-                    print("\n[ROLLOUT START] init state from t=4")
-                    for i in range(min(8, phys_action[:, 5:].shape[1])):
-                        print(f"roll_step={i:02d} uses phys_action at t={5+i:02d} -> action_idx={int(torch.argmax(phys_action[0, 5+i]).item()):02d}")
-                    self._wm.dynamics._debug_img_mode = True
-                    self._wm.dynamics._debug_img_counter = 0
-                else:
+                if not debug_now:
                     self._wm.dynamics._debug_img_mode = False
 
                 prior = self._wm.dynamics.imagine_with_action(phys_action[:, 5:], init)
                 self._wm.dynamics._debug_img_mode = False
+
+                feat_prior = self._wm.dynamics.get_feat(prior)
+                wm_phys_return = self._wm.heads["reward"](feat_prior).mode().sum(dim=1).squeeze()
+                wm_phys_returns.append(float(tools.to_np(wm_phys_return)))
 
                 phys_episode_returns.append(tools.to_np(data["reward"][:, 5:].sum(dim=1).squeeze()))
                 mortalities.append(tools.to_np(data["mortality"][:, 0].squeeze()))
@@ -379,15 +398,16 @@ class Dreamer(nn.Module):
             print("No valid episodes for evaluation.", flush=True)
             return
 
-        ope_summary, fig, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates = \
+        ope_summary, fig, fig_wm, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates = \
             self._finalize_ope(ope_trajs, ai_episode_returns, phys_episode_returns,
-                               mortalities, value_estimates, true_mortality,
+                               wm_phys_returns, mortalities, value_estimates, true_mortality,
                                valid_episodes, imag_rewards, ai_sample_counts)
         if ope_summary:
             metrics.update(ope_summary)
+        fig_wm.savefig(os.path.join(self._logdir, f"mortality_vs_wm_clinician_return_{epoch}.png"))
         fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
         corr = self._save_critic_feature_plots(
-            value_estimates, phys_episode_returns, actual_disc_returns, epoch, prefix="",
+            value_estimates, lambda_return_targets, epoch, prefix="",
             phi_all_t=phi_all_t, value_all_t=value_all_t,
         )
         if corr is not None:
@@ -893,13 +913,14 @@ class Dreamer(nn.Module):
         imag_rewards = 0.0
 
         phys_episode_returns = []
+        wm_phys_returns = []
         ai_episode_returns = []
         value_estimates = []
         ai_actions = []
         mortalities = []
         ope_trajs = []
         ai_sample_counts = np.zeros(self._config.num_actions, dtype=np.int64)
-        actual_disc_returns = []
+        lambda_return_targets = []
         phi_all_t = []
         value_all_t = []
 
@@ -932,7 +953,7 @@ class Dreamer(nn.Module):
 
                 feat_init = self._wm.dynamics.get_feat(init)
                 value_estimates.append(float(tools.to_np(self._get_policy_value_estimate(feat_init.detach()).squeeze())))
-                actual_disc_returns.append(self._compute_disc_return(data, t_start=4))
+                lambda_return_targets.append(self._compute_lambda_return_at_t4(full_states, data))
                 self._collect_all_timesteps(full_states, data, phi_all_t, value_all_t)
 
                 self._wm.dynamics._debug_img_mode = debug_now
@@ -991,6 +1012,7 @@ class Dreamer(nn.Module):
                     if traj_ope is not None:
                         ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))
 
+                wm_phys_returns.append(float(tools.to_np(reward_prior.sum(dim=1).squeeze())))
                 phys_episode_returns.append(tools.to_np(data["reward"][:, 5:].sum(dim=1).squeeze()))
                 mortalities.append(tools.to_np(data["mortality"][:, 0].squeeze()))
                 if data["mortality"].any():
@@ -1009,19 +1031,20 @@ class Dreamer(nn.Module):
         metrics["reward_nll"] = (reward_nll_post + reward_nll_prior) / valid_episodes
         metrics["cont_acc"] = cont_acc / valid_episodes
 
-        ope_summary, fig, fig_value, *_ = self._finalize_ope(
+        ope_summary, fig, fig_wm, fig_value, *_ = self._finalize_ope(
             ope_trajs, ai_episode_returns, phys_episode_returns,
-            mortalities, value_estimates, true_mortality,
+            wm_phys_returns, mortalities, value_estimates, true_mortality,
             valid_episodes, imag_rewards, ai_sample_counts
         )
         metrics.update(ope_summary)
         images["mortality_vs_expected_return"] = fig
+        images["mortality_vs_wm_clinician_return"] = fig_wm
         images["mortality_vs_value"] = fig_value
 
         if epoch is not None:
             fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
             corr = self._save_critic_feature_plots(
-                np.array(value_estimates), np.array(phys_episode_returns), actual_disc_returns, epoch, prefix="_eval",
+                np.array(value_estimates), lambda_return_targets, epoch, prefix="_eval",
                 phi_all_t=phi_all_t, value_all_t=value_all_t,
             )
             if corr is not None:
