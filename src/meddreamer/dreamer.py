@@ -179,41 +179,53 @@ class Dreamer(nn.Module):
                            torch.arange(len(rewards), device=rewards.device, dtype=torch.float32))
         return float((rewards * powers).sum().item())
 
-    # Precomputed denormalization constants (from normalization.pkl).
-    # Feature tensor follows STATE_COLUMNS order; scaler follows ALL_FEATURE_COLUMNS order.
-    #   SOFA (STATE idx 24, scaler idx 20): z-scored directly → raw = z * 3.1537 + 4.9317
-    #   Lactate (STATE idx 23, scaler idx 36): log(0.1+x) then z-scored → raw = exp(z * 0.5074 + 0.6014) - 0.1
-    _SOFA_MEAN, _SOFA_STD = 4.9317, 3.1537
-    _LAC_LOG_MEAN, _LAC_LOG_STD = 0.6014, 0.5074
-    _SOFA_FEAT_IDX = 24
-    _LAC_FEAT_IDX  = 23
+    # Feature indices in STATE_COLUMNS order (from column_config.pkl) for medR potential.
+    _MEDR_FEAT_INDICES = {
+        "sofa": 24,
+        "lactate": 23,
+        "baseexcess": 22,
+        "urineoutput": 35,
+        "mbp": 8,
+        "heartrate": 6,
+    }
+    # Best candidate params (cand0062 from reward_medR.py).
+    _MEDR_CANDIDATE = {
+        "k_scale": 1.0,
+        "sigma_scale": 1.25,
+        "confidence_tau": 24.0,
+        "survival_weight": 0.8,
+        "confidence_weight": 0.2,
+        "use_time_decay": False,
+    }
 
-    def _collect_all_timesteps(self, full_states, data, sofa_all, lactate_all, value_all):
-        """Collect (sofa_t, lactate_t, V(s_t)) for all t >= 1 in the episode."""
-        import math
+    def _collect_all_timesteps(self, full_states, data, phi_all, value_all):
+        """Collect (phi(s_t), V(s_t)) for all t >= 1 using the medR potential function."""
+        from src.preprocessing.reward.medr_fitness_selection import candidate_potential
         feats = self._wm.dynamics.get_feat(full_states)  # (B, T, D)
         T = feats.shape[1]
-        raw_features = data["features"][0]  # (T, num_features)
-        n = raw_features.shape[-1]
+        raw_features = data["features"][0].cpu().numpy()   # (T, num_features)
+        raw_delta = data["delta"][0].cpu().numpy()          # (T, num_features)
         values = self._task_behavior.value(feats[0]).mode().squeeze(-1)  # (T,)
         for t in range(1, T):
+            phi = candidate_potential(
+                x=raw_features[t],
+                d=raw_delta[t],
+                feature_indices=self._MEDR_FEAT_INDICES,
+                candidate=self._MEDR_CANDIDATE,
+                t=t,
+            )
+            phi_all.append(phi)
             value_all.append(float(values[t].item()))
-            if self._SOFA_FEAT_IDX < n:
-                z = float(raw_features[t, self._SOFA_FEAT_IDX].item())
-                sofa_all.append(z * self._SOFA_STD + self._SOFA_MEAN)
-            if self._LAC_FEAT_IDX < n:
-                z = float(raw_features[t, self._LAC_FEAT_IDX].item())
-                lactate_all.append(math.exp(z * self._LAC_LOG_STD + self._LAC_LOG_MEAN) - 0.1)
 
     def _save_critic_feature_plots(self, value_estimates, phys_returns, actual_disc_returns, epoch, prefix="",
-                                    sofa_all_t=None, lactate_all_t=None, value_all_t=None):
+                                    phi_all_t=None, value_all_t=None):
         import matplotlib.pyplot as plt
         value_estimates = np.array(value_estimates, dtype=np.float32)
         n = len(value_estimates)
         save = lambda fig, name: fig.savefig(
             os.path.join(self._logdir, f"critic_vs_{name}{prefix}_{epoch}.png")
         )
-        # Per-episode plots (use episode-level value at t=4)
+        # Per-episode plots (V(s_4) per episode)
         if len(phys_returns) == n and n > 10:
             fig = tools.plot_critic_vs_feature(phys_returns, value_estimates, xlabel="Phys Episode Return")
             save(fig, "phys_return")
@@ -225,17 +237,13 @@ class Dreamer(nn.Module):
             )
             save(fig, "actual_return")
             plt.close(fig)
-        # All-timestep plots (V(s_t) vs feature at each t >= 1)
-        if value_all_t and len(value_all_t) > 10:
+        # All-timestep plot: V(s_t) vs phi(s_t) — direct test of whether the critic
+        # understands the medR potential structure (phi high = near ceiling = lower V expected).
+        if phi_all_t and value_all_t and len(phi_all_t) == len(value_all_t) and len(phi_all_t) > 10:
             v_all = np.array(value_all_t, dtype=np.float32)
-            if sofa_all_t and len(sofa_all_t) == len(v_all):
-                fig = tools.plot_critic_vs_feature(sofa_all_t, v_all, xlabel="SOFA (raw)")
-                save(fig, "sofa")
-                plt.close(fig)
-            if lactate_all_t and len(lactate_all_t) == len(v_all):
-                fig = tools.plot_critic_vs_feature(lactate_all_t, v_all, xlabel="Lactate mmol/L (raw)")
-                save(fig, "lactate")
-                plt.close(fig)
+            fig = tools.plot_critic_vs_feature(phi_all_t, v_all, xlabel="medR potential φ(s)")
+            save(fig, "potential")
+            plt.close(fig)
         return corr
 
     def train(self, epochs):
@@ -261,8 +269,7 @@ class Dreamer(nn.Module):
         ope_trajs = []
         ai_sample_counts = np.zeros(self._config.num_actions, dtype=np.int64)
         actual_disc_returns = []
-        sofa_all_t = []
-        lactate_all_t = []
+        phi_all_t = []
         value_all_t = []
 
         self._set_eval_mode()
@@ -310,7 +317,7 @@ class Dreamer(nn.Module):
                 feat_init = self._wm.dynamics.get_feat(init)
                 value_estimates.append(float(tools.to_np(self._get_policy_value_estimate(feat_init.detach()).squeeze())))
                 actual_disc_returns.append(self._compute_disc_return(data, t_start=4))
-                self._collect_all_timesteps(full_states, data, sofa_all_t, lactate_all_t, value_all_t)
+                self._collect_all_timesteps(full_states, data, phi_all_t, value_all_t)
 
                 if debug_now:
                     print("\n[ROLLOUT START] init state from t=4")
@@ -381,7 +388,7 @@ class Dreamer(nn.Module):
         fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
         corr = self._save_critic_feature_plots(
             value_estimates, phys_episode_returns, actual_disc_returns, epoch, prefix="",
-            sofa_all_t=sofa_all_t, lactate_all_t=lactate_all_t, value_all_t=value_all_t,
+            phi_all_t=phi_all_t, value_all_t=value_all_t,
         )
         if corr is not None:
             metrics["critic_return_corr"] = round(float(corr), 4)
@@ -893,8 +900,7 @@ class Dreamer(nn.Module):
         ope_trajs = []
         ai_sample_counts = np.zeros(self._config.num_actions, dtype=np.int64)
         actual_disc_returns = []
-        sofa_all_t = []
-        lactate_all_t = []
+        phi_all_t = []
         value_all_t = []
 
         self._set_eval_mode()
@@ -927,7 +933,7 @@ class Dreamer(nn.Module):
                 feat_init = self._wm.dynamics.get_feat(init)
                 value_estimates.append(float(tools.to_np(self._get_policy_value_estimate(feat_init.detach()).squeeze())))
                 actual_disc_returns.append(self._compute_disc_return(data, t_start=4))
-                self._collect_all_timesteps(full_states, data, sofa_all_t, lactate_all_t, value_all_t)
+                self._collect_all_timesteps(full_states, data, phi_all_t, value_all_t)
 
                 self._wm.dynamics._debug_img_mode = debug_now
                 if debug_now:
@@ -1017,7 +1023,7 @@ class Dreamer(nn.Module):
             fig_value.savefig(os.path.join(self._logdir, f"mortality_vs_value_{epoch}.png"))
             corr = self._save_critic_feature_plots(
                 np.array(value_estimates), np.array(phys_episode_returns), actual_disc_returns, epoch, prefix="_eval",
-                sofa_all_t=sofa_all_t, lactate_all_t=lactate_all_t, value_all_t=value_all_t,
+                phi_all_t=phi_all_t, value_all_t=value_all_t,
             )
             if corr is not None:
                 metrics["critic_return_corr"] = round(float(corr), 4)
