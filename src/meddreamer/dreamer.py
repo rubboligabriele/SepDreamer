@@ -1014,8 +1014,7 @@ class Dreamer(nn.Module):
             mortalities, value_estimates, true_mortality,
             valid_episodes, imag_rewards, ai_sample_counts
         )
-        if self._behavior_policy_loaded:
-            metrics.update(ope_summary)
+        metrics.update(ope_summary)
         images["mortality_vs_expected_return"] = fig
         images["mortality_vs_value"] = fig_value
 
