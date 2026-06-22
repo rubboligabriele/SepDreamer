@@ -435,9 +435,14 @@ class ImagBehavior(nn.Module):
             # cont_real always uses actual observed continuation so that real deaths
             # (cont=0) correctly zero out the lambda-return at that step.
             use_wm_heads_on_real = getattr(self._config, "use_wm_heads_on_real", False)
+            use_pred_cont_on_real = getattr(self._config, "use_pred_cont_on_real", False)
             if use_wm_heads_on_real:
                 reward_real = self._world_model.heads["reward"](feat[1:]).mode()
-                # cont_real intentionally kept as actual observed cont (not pred)
+            if use_pred_cont_on_real:
+                if self._config.cont_type == "mort3":
+                    cont_real = self._world_model.heads["cont"](feat[1:]).probs[..., 2, None]
+                else:
+                    cont_real = self._world_model.heads["cont"](feat[1:]).mean
 
             # Predicted continuation for imagined transitions
             if self._config.cont_type == "mort3":

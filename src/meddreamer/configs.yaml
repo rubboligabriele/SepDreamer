@@ -169,8 +169,9 @@ p1-sepsis:
 
   real_loss_weight: 1.0
   imag_loss_weight: 0.2
-  critic_warmup_steps: 2000
+  critic_warmup_steps: 0
   use_wm_heads_on_real: True
+  use_pred_cont_on_real: False
 
 
 p2-sepsis:
