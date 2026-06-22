@@ -1101,7 +1101,7 @@ def plot_critic_vs_actual_return(critic_values, actual_returns, discount):
     hi = max(ar.max(), cv.max())
     ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.5, label="diagonal")
 
-    ax.set_xlabel(f"Actual discounted return (γ={discount})", fontsize=13)
+    ax.set_xlabel(f"Lambda-return target R^λ(s₄)", fontsize=13)
     ax.set_ylabel("Critic V(s₄)", fontsize=13)
     ax.set_title(f"Pearson r = {corr:.3f}", fontsize=13)
     ax.tick_params(labelsize=12)
