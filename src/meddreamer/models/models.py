@@ -614,14 +614,11 @@ class ImagBehavior(nn.Module):
                     )
                     repl_ret = torch.stack(repl_ret, dim=1).detach()
 
-                    repl_offset, repl_scale = self._valuenorm.update(repl_ret)
-                    repl_ret_normed = (repl_ret - repl_offset) / repl_scale
-
                     slow_reg = getattr(self._config.critic, "slow_reg", 1.0)
                     rep_loss_weight = getattr(self._config.critic, "rep_loss_weight", 1.0)
                     repl_loss = rep_loss_weight * torch.mean(
-                        (repl_val_dist.mode() - repl_ret_normed.detach()) ** 2
-                        + slow_reg * (slow_val_real - repl_ret_normed.detach()) ** 2
+                        -repl_val_dist.log_prob(repl_ret)
+                        - slow_reg * self._slow_value(feat_real.detach()).log_prob(repl_ret)
                     )
                     value_loss = value_loss + repl_loss
                     metrics["repl_loss"] = to_np(repl_loss)
