@@ -51,6 +51,53 @@ def make_dataset_and_agent(config):
     return agent, episodes
 
 
+def collect_mortality_vs_return(agent, episodes, max_episodes, context_steps=5):
+    """Compute per-episode returns (real and WM prior) for mortality analysis.
+
+    For each episode:
+      - real_return:  sum of actual rewards from step context_steps onward
+      - wm_return:    sum of reward_head(prior) predictions using real clinician
+                      actions, starting from the posterior state at context_steps-1
+    """
+    real_returns = []
+    wm_returns = []
+    mortalities = []
+    count = 0
+
+    total = min(max_episodes, len(episodes)) if max_episodes is not None else len(episodes)
+    with torch.no_grad():
+        for stay_id, data in tqdm(episodes.items(), total=total, desc="Mortality episodes", unit="ep"):
+            if max_episodes is not None and count >= max_episodes:
+                break
+
+            data = agent._expand_episode(data)
+            T = data["features"].shape[1]
+            if T <= context_steps:
+                continue
+
+            post, embed, data = agent._wm._load(data)
+
+            init = {k: v[:, context_steps - 1] for k, v in post.items()}
+            phys_action = data["action"][:, context_steps:]  # (B, T-ctx, A)
+
+            prior = agent._wm.dynamics.imagine_with_action(phys_action, init)
+            feat_prior = agent._wm.dynamics.get_feat(prior)              # (B, T-ctx, D)
+            reward_wm = agent._wm.heads["reward"](feat_prior).mode()     # (B, T-ctx, 1)
+
+            wm_ret = float(reward_wm.sum(dim=1).squeeze().item())
+            real_ret = float(data["reward"][:, context_steps:].sum(dim=1).squeeze().item())
+            mortality = float(data["mortality"][0, 0].item())
+
+            wm_returns.append(wm_ret)
+            real_returns.append(real_ret)
+            mortalities.append(mortality)
+            count += 1
+
+    return np.array(real_returns, dtype=np.float32), \
+           np.array(wm_returns, dtype=np.float32), \
+           np.array(mortalities, dtype=np.float32)
+
+
 def collect_rows(agent, episodes, max_episodes, device):
     rows = []
     count = 0
@@ -194,17 +241,58 @@ def main():
     tools.set_seed_everywhere(config.seed)
     agent, episodes = make_dataset_and_agent(config)
 
+    os.makedirs(args.output_dir, exist_ok=True)
+
     print(f"Collecting reward head predictions on {args.max_episodes} episodes...")
     df = collect_rows(agent, episodes, args.max_episodes, config.device)
     print(f"Collected {len(df):,} timesteps from {df['stay_id'].nunique()} episodes")
 
     csv_path = os.path.join(args.output_dir, "reward_head_calibration.csv")
-    os.makedirs(args.output_dir, exist_ok=True)
     df.to_csv(csv_path, index=False)
     print(f"Saved CSV: {csv_path}")
 
     print("\n=== REWARD HEAD CALIBRATION ===")
     make_plots(df, args.output_dir)
+
+    print("\n=== MORTALITY VS RETURN ANALYSIS ===")
+    real_returns, wm_returns, mortalities = collect_mortality_vs_return(
+        agent, episodes, args.max_episodes
+    )
+    print(f"Episodes analyzed: {len(mortalities)}  mortality rate: {mortalities.mean():.4f}")
+    print(f"Real return  — mean: {real_returns.mean():.3f}  std: {real_returns.std():.3f}")
+    print(f"WM return    — mean: {wm_returns.mean():.3f}  std: {wm_returns.std():.3f}")
+
+    fig_real, _, _, _ = tools.plot_mortality_vs_value(
+        real_returns, mortalities, xlabel="Real Episode Return (sum from t=5)"
+    )
+    fig_real.savefig(os.path.join(args.output_dir, "mortality_vs_real_return.png"), dpi=150)
+    plt.close(fig_real)
+
+    fig_wm, _, _, _ = tools.plot_mortality_vs_value(
+        wm_returns, mortalities, xlabel="WM Prior Return (reward head, sum from t=5)"
+    )
+    fig_wm.savefig(os.path.join(args.output_dir, "mortality_vs_wm_return.png"), dpi=150)
+    plt.close(fig_wm)
+
+    fig_both, axes = plt.subplots(1, 2, figsize=(14, 5))
+    for ax, vals, title in [
+        (axes[0], real_returns, "Real return"),
+        (axes[1], wm_returns,   "WM prior return"),
+    ]:
+        surv = vals[mortalities == 0]
+        dead = vals[mortalities == 1]
+        ax.hist(surv, bins=50, alpha=0.6, label=f"survived (n={len(surv)})", density=True)
+        ax.hist(dead, bins=50, alpha=0.6, label=f"died (n={len(dead)})", density=True)
+        ax.set_title(title)
+        ax.set_xlabel("Return")
+        ax.set_ylabel("Density")
+        ax.legend()
+    plt.suptitle("Episode return distribution by outcome")
+    plt.tight_layout()
+    fig_both.savefig(os.path.join(args.output_dir, "return_dist_by_outcome.png"), dpi=150)
+    plt.close(fig_both)
+
+    print(f"Plots saved to: {args.output_dir}")
 
 
 if __name__ == "__main__":
