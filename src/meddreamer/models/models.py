@@ -458,16 +458,13 @@ class ImagBehavior(nn.Module):
             # Predicted rewards for imagined transitions
             reward_imag = self._world_model.heads["reward"](imag_next_feat).mode()
 
-            # Optionally replace real rewards and continuations with WM head predictions,
-            # aligning real and imagined segments to the same distribution (as in the paper).
-            # feat[1:] = next real states s_{t+1}, same alignment as reward_real_full[1:].
+            # Replace real rewards with WM head predictions (paper-consistent hybrid).
+            # cont_real always uses actual observed continuation so that real deaths
+            # (cont=0) correctly zero out the lambda-return at that step.
             use_wm_heads_on_real = getattr(self._config, "use_wm_heads_on_real", False)
             if use_wm_heads_on_real:
                 reward_real = self._world_model.heads["reward"](feat[1:]).mode()
-                if self._config.cont_type == "mort3":
-                    cont_real = self._world_model.heads["cont"](feat[1:]).probs[..., 2, None]
-                else:
-                    cont_real = self._world_model.heads["cont"](feat[1:]).mean
+                # cont_real intentionally kept as actual observed cont (not pred)
 
             # Predicted continuation for imagined transitions
             if self._config.cont_type == "mort3":
@@ -593,37 +590,12 @@ class ImagBehavior(nn.Module):
 
                         print(flush=True)
 
-                    print("\n[TARGET DEBUG]", flush=True)
-                    print("base mean:", base.mean().item(), flush=True)
-                    print("target mean:", target_tensor.mean().item(), flush=True)
-                    print("adv mean:", (target_tensor - base).mean().item(), flush=True)
-                    print("base min/max:", base.min().item(), base.max().item(), flush=True)
-                    print("target min/max:", target_tensor.min().item(), target_tensor.max().item(), flush=True)
-
-                    print("\n[REAL VS IMAG]", flush=True)
-                    print("real target mean:", target_tensor[:n_real].mean().item(), flush=True)
-                    print("imag target mean:", target_tensor[n_real:].mean().item(), flush=True)
-                    print("real value mean:", base[:n_real].mean().item(), flush=True)
-                    print("imag value mean:", base[n_real:].mean().item(), flush=True)
-                    print("real adv mean:", (target_tensor[:n_real] - base[:n_real]).mean().item(), flush=True)
-                    print("imag adv mean:", (target_tensor[n_real:] - base[n_real:]).mean().item(), flush=True)
-
                     print("\n[REWARD/DISCOUNT DEBUG]", flush=True)
                     print("reward real mean:", reward_hybrid[:n_real].mean().item(), flush=True)
                     print("reward imag mean:", reward_hybrid[n_real:].mean().item(), flush=True)
                     print("discount real mean:", discount_hybrid[:n_real].mean().item(), flush=True)
                     print("discount imag mean:", discount_hybrid[n_real:].mean().item(), flush=True)
                     print("discount imag min/max:", discount_hybrid[n_real:].min().item(), discount_hybrid[n_real:].max().item(), flush=True)
-
-                    print("\n[TRAJECTORY DEBUG]", flush=True)
-                    print("real length:", n_real, flush=True)
-                    print("imag length:", reward_hybrid.shape[0] - n_real, flush=True)
-                    print("total length:", reward_hybrid.shape[0], flush=True)
-
-                    print("\n[CONTINUATION DEBUG]", flush=True)
-                    print("cont imag mean:", cont_imag.mean().item(), flush=True)
-                    print("cont imag min/max:", cont_imag.min().item(), cont_imag.max().item(), flush=True)
-                    print("cont imag first trajectory:", cont_imag[:, 0].detach().cpu().numpy(), flush=True)
 
                 if not in_warmup:
                     actor_loss, mets = self._compute_actor_loss_hybrid(
@@ -649,7 +621,49 @@ class ImagBehavior(nn.Module):
                     slow_target = self._slow_value(feat_hybrid.detach()).mode().detach()
                     value_loss -= value_dist.log_prob(slow_target)
 
+                value_loss_per_step = value_loss  # before mean, shape (T, B) or (T*B,)
                 value_loss = torch.mean(weights * value_loss[..., None] if value_loss.ndim == 2 else weights * value_loss)
+
+                if self._config.debug:
+                    with torch.no_grad():
+                        pred = value_dist.mode()      # (T, B, 1) or (T*B, 1)
+                        tgt  = target_tensor          # same shape
+
+                        print("\n[CRITIC DEBUG]", flush=True)
+                        print(f"  value_loss (scalar):       {value_loss.item():.6f}", flush=True)
+                        print(f"  value pred  mean/std/min/max: "
+                              f"{pred.mean().item():.4f} / {pred.std().item():.4f} / "
+                              f"{pred.min().item():.4f} / {pred.max().item():.4f}", flush=True)
+                        print(f"  target      mean/std/min/max: "
+                              f"{tgt.mean().item():.4f} / {tgt.std().item():.4f} / "
+                              f"{tgt.min().item():.4f} / {tgt.max().item():.4f}", flush=True)
+                        print(f"  pred-target bias (pred-tgt): {(pred - tgt).mean().item():.4f}", flush=True)
+                        print(f"  abs error mean:             {(pred - tgt).abs().mean().item():.4f}", flush=True)
+
+                        # Per-step loss distribution
+                        loss_flat = value_loss_per_step.detach().flatten()
+                        print(f"  loss_per_step mean/std/min/max: "
+                              f"{loss_flat.mean().item():.4f} / {loss_flat.std().item():.4f} / "
+                              f"{loss_flat.min().item():.4f} / {loss_flat.max().item():.4f}", flush=True)
+
+                        if self._config.critic["slow_target"]:
+                            print(f"  slow_target mean/std/min/max: "
+                                  f"{slow_target.mean().item():.4f} / {slow_target.std().item():.4f} / "
+                                  f"{slow_target.min().item():.4f} / {slow_target.max().item():.4f}", flush=True)
+
+                        # Check target collapse — if std << mean range, targets are degenerate
+                        tgt_std = tgt.std().item()
+                        tgt_range = tgt.max().item() - tgt.min().item()
+                        print(f"  target std/range ratio:     {tgt_std / max(abs(tgt_range), 1e-8):.4f} "
+                              f"(low = collapsed targets)", flush=True)
+
+                        # real vs imag split
+                        print(f"  [real steps] pred mean: {pred[:n_real].mean().item():.4f}  "
+                              f"tgt mean: {tgt[:n_real].mean().item():.4f}  "
+                              f"loss mean: {value_loss_per_step[:n_real].mean().item():.4f}", flush=True)
+                        print(f"  [imag steps] pred mean: {pred[n_real:].mean().item():.4f}  "
+                              f"tgt mean: {tgt[n_real:].mean().item():.4f}  "
+                              f"loss mean: {value_loss_per_step[n_real:].mean().item():.4f}", flush=True)
 
             metrics.update(tools.tensorstats(value_dist.mode(), "value"))
             metrics.update(tools.tensorstats(target_tensor, "target"))
