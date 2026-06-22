@@ -36,8 +36,8 @@ defaults:
   units: 512
   act: 'SiLU'
   norm: True
-  terminal_reward_loss_weight: 0.0
-  terminal_cont_loss_weight: 100.0
+  terminal_reward_loss_weight: 1.0
+  terminal_cont_loss_weight: 1.0
   terminal_reward_to_pm1: False
   terminal_reward_only: False
 
@@ -48,13 +48,13 @@ defaults:
   decoder:
     {act: 'SiLU', norm: True, mlp_layers: 2, mlp_units: 512, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'onehot', entropy: 3e-3, unimix_ratio: 0.1, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 1}
+    {layers: 2, dist: 'onehot', entropy: 3e-4, unimix_ratio: 0.01, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-5, grad_clip: 100.0, outscale: 1}
   critic:
-    {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 0.0}
+    {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 1e-4, eps: 1e-5, grad_clip: 100.0, outscale: 0.0}
   reward_head:
-    {layers: 2, dist: 'symlog_mse', loss_scale: 10, outscale: 1.0}
+    {layers: 2, dist: 'symlog_mse', loss_scale: 1.0, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5} # pos_weight = (1-p_death)/p_death ≈ 0.78/0.22 ≈ 3.5
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 1.0} # pos_weight = (1-p_death)/p_death ≈ 0.78/0.22 ≈ 3.5
   behavior_model:
     type: 'lstm'
     input_type: 'raw'
@@ -63,7 +63,7 @@ defaults:
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
-  dyn_scale: 1.0
+  dyn_scale: 0.5
   rep_scale: 0.1
   kl_free: 1.0
   weight_decay: 1e-5
@@ -150,13 +150,13 @@ p1-sepsis:
   decoder:
     {act: 'SiLU', norm: True, mlp_layers: 2, mlp_units: 512, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'onehot', entropy: 3e-2, unimix_ratio: 0.2, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 3e-6, eps: 1e-8, grad_clip: 100.0, outscale: 0.1}
+    {layers: 2, dist: 'onehot', entropy: 3e-3, unimix_ratio: 0.01, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-5, grad_clip: 100.0, outscale: 1}
   critic:
-    {layers: 2, dist: 'symlog_mse', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, repl_loss: True, slow_reg: 1.0, rep_loss_weight: 1.0, lr: 5e-5, eps: 1e-8, grad_clip: 100.0, outscale: 0.1}
+    {layers: 2, dist: 'symlog_mse', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, repl_loss: False, slow_reg: 1.0, rep_loss_weight: 1.0, lr: 1e-4, eps: 1e-5, grad_clip: 100.0, outscale: 0.1}
   reward_head:
     {layers: 2, dist: 'symlog_mse', loss_scale: 10, outscale: 1.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 1.0}
   imag_horizon: 15
   imag_time: 10
   bc_loss_weight: 0.0
@@ -170,7 +170,7 @@ p1-sepsis:
   real_loss_weight: 1.0
   imag_loss_weight: 0.2
   critic_warmup_steps: 500
-  use_wm_heads_on_real: true
+  use_wm_heads_on_real: false
 
 
 p2-sepsis:

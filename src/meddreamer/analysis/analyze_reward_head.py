@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import torch
 from ruamel.yaml import YAML
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 import src.meddreamer.utils.tools as tools
 from src.meddreamer.dreamer import MedDreamer
@@ -54,8 +55,9 @@ def collect_rows(agent, episodes, max_episodes, device):
     rows = []
     count = 0
 
+    total = min(max_episodes, len(episodes)) if max_episodes is not None else len(episodes)
     with torch.no_grad():
-        for stay_id, data in episodes.items():
+        for stay_id, data in tqdm(episodes.items(), total=total, desc="Episodes", unit="ep"):
             if max_episodes is not None and count >= max_episodes:
                 break
 
