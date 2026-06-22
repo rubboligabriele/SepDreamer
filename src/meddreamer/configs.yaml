@@ -150,9 +150,9 @@ p1-sepsis:
   decoder:
     {act: 'SiLU', norm: True, mlp_layers: 2, mlp_units: 512, feature_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'onehot', entropy: 3e-3, unimix_ratio: 0.01, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-4, eps: 1e-5, grad_clip: 100.0, outscale: 1}
+    {layers: 2, dist: 'onehot', entropy: 3e-2, unimix_ratio: 0.1, std: 'none', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 1e-5, eps: 1e-8, grad_clip: 100.0, outscale: 0.1}
   critic:
-    {layers: 2, dist: 'symlog_mse', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, repl_loss: False, slow_reg: 1.0, rep_loss_weight: 1.0, lr: 1e-4, eps: 1e-5, grad_clip: 100.0, outscale: 0.1}
+    {layers: 2, dist: 'symlog_mse', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, repl_loss: False, slow_reg: 1.0, rep_loss_weight: 1.0, lr: 1e-4, eps: 1e-8, grad_clip: 100.0, outscale: 0.1}
   reward_head:
     {layers: 2, dist: 'symlog_mse', loss_scale: 10, outscale: 1.0}
   cont_head:
@@ -169,8 +169,8 @@ p1-sepsis:
 
   real_loss_weight: 1.0
   imag_loss_weight: 0.2
-  critic_warmup_steps: 500
-  use_wm_heads_on_real: false
+  critic_warmup_steps: 2000
+  use_wm_heads_on_real: True
 
 
 p2-sepsis:
