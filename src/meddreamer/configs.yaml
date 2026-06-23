@@ -54,7 +54,7 @@ defaults:
   reward_head:
     {layers: 2, dist: 'symlog_mse', loss_scale: 1.0, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 1.0} # pos_weight = (1-p_death)/p_death ≈ 0.78/0.22 ≈ 3.5
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0}
   behavior_model:
     type: 'lstm'
     input_type: 'raw'
@@ -156,7 +156,7 @@ p1-sepsis:
   reward_head:
     {layers: 2, dist: 'symlog_mse', loss_scale: 10, outscale: 1.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 1.0}
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0}
   imag_horizon: 15
   imag_time: 10
   bc_loss_weight: 0.0
@@ -199,7 +199,7 @@ p2-sepsis:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0}
   imag_horizon: 15
   imag_time: 10
   task: 'sepsis'
@@ -233,7 +233,7 @@ dreamer:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0}
   task: 'ventilation'
   dataset: 'mimic'
   reward_key: 'ori_reward'
@@ -266,7 +266,7 @@ debug:
   reward_head:
     {layers: 2, dist: 'symlog_disc', loss_scale: 1, outscale: 0.0}
   cont_head:
-    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0, pos_weight: 3.5}
+    {layers: 2, dist: 'binary', loss_scale: 1, outscale: 1.0}
   # task: 'ventilation'
   # dataset: 'eicu'
   # reward_key: 'ori_reward_short'

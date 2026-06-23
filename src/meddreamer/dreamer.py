@@ -297,7 +297,7 @@ class Dreamer(nn.Module):
         valid = [(t, r) for t, r in zip(steps, correlations) if not np.isnan(r)]
         if not valid:
             return
-        best_t, best_r = max(valid, key=lambda x: abs(x[1]))
+        best_t, best_r = min(valid, key=lambda x: x[1])
         metrics["critic_mortality_corr_best_step"] = best_t
         metrics["critic_mortality_corr_best_r"] = round(float(best_r), 4)
 

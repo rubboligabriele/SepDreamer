@@ -87,7 +87,6 @@ class WorldModel(nn.Module):
             outscale=config.cont_head["outscale"],
             device=config.device,
             name="Cont",
-            pos_weight=config.cont_head.get("pos_weight", None),
         )
         for name in config.grad_heads:
             assert name in self.heads, name
