@@ -62,6 +62,7 @@ class Dreamer(nn.Module):
         ai_episode_return = 0.0
         actions = []
         ai_probs = []
+        ai_step_rewards = []
 
         for t in range(T_roll):
             feat_ai = self._wm.dynamics.get_feat(state_ai)
@@ -73,13 +74,15 @@ class Dreamer(nn.Module):
             reward_ai = self._wm.heads["reward"](
                 self._wm.dynamics.get_feat(state_ai).detach()
             ).mode()
-            ai_episode_return += float(tools.to_np(reward_ai.squeeze()))
+            r = float(tools.to_np(reward_ai.squeeze()))
+            ai_episode_return += r
+            ai_step_rewards.append(r)
 
         actions = np.stack(actions, axis=1)
         ai_actions_ep = np.argmax(np.squeeze(actions, axis=0), axis=-1)
         ai_probs_np = np.stack(ai_probs, axis=0)
 
-        return ai_episode_return, ai_actions_ep, ai_probs_np
+        return ai_episode_return, ai_actions_ep, ai_probs_np, ai_step_rewards
 
     def _compute_ope_loop(self, full_states, phys_action, pi_b_seq, data):
         pi_ai_clin_list = []
@@ -171,7 +174,7 @@ class Dreamer(nn.Module):
                 "ess": ope_metrics["ess"],
             })
 
-        return ope_summary, fig, fig_wm, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates
+        return ope_summary, fig, fig_wm, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates, wm_bin_centers, wm_smoothed
 
     def _get_policy_value_estimate(self, feat):
         return self._task_behavior.value(feat).mode().squeeze(-1)
@@ -277,48 +280,62 @@ class Dreamer(nn.Module):
             plt.close(fig)
         return corr
 
-    def _plot_critic_by_step(self, critic_by_step, epoch, metrics):
+    def _plot_critic_vs_ai(self, critic_by_step, epoch, metrics):
         import matplotlib.pyplot as plt
         from scipy.stats import pearsonr
 
-        steps = sorted(critic_by_step.keys())
-        correlations, ns = [], []
-        for t in steps:
-            vals = np.array(critic_by_step[t]["values"], dtype=np.float32)
-            morts = np.array(critic_by_step[t]["mortalities"], dtype=np.float32)
-            if len(vals) < 10 or morts.std() < 1e-6:
-                correlations.append(float("nan"))
-                ns.append(0)
+        best_r_ret = float("nan")
+        best_t_ret = None
+        best_r_mort = float("nan")
+        best_t_mort = None
+
+        for t, data_t in sorted(critic_by_step.items()):
+            vals = np.array(data_t["values"], dtype=np.float32)
+            ai_rets = np.array(data_t["ai_returns"], dtype=np.float32)
+            phys_rets = np.array(data_t["phys_returns"], dtype=np.float32)
+            morts = np.array(data_t["mortalities"], dtype=np.float32)
+
+            if len(vals) < 10:
                 continue
-            r, _ = pearsonr(vals, morts)
-            correlations.append(r)
-            ns.append(len(vals))
 
-        valid = [(t, r) for t, r in zip(steps, correlations) if not np.isnan(r)]
-        if not valid:
-            return
-        best_t, best_r = min(valid, key=lambda x: x[1])
-        metrics["critic_mortality_corr_best_step"] = best_t
-        metrics["critic_mortality_corr_best_r"] = round(float(best_r), 4)
+            r_ret, _ = pearsonr(vals, ai_rets)
+            if np.isnan(best_r_ret) or r_ret > best_r_ret:
+                best_r_ret = r_ret
+                best_t_ret = t
 
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(steps, correlations, marker="o")
-        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-        ax.set_xlabel("Step t")
-        ax.set_ylabel("Pearson r  (V(s_t) vs mortality)")
-        ax.set_title(f"Critic value predictiveness of mortality by step  [epoch {epoch}]")
-        plt.tight_layout()
-        fig.savefig(os.path.join(self._logdir, f"critic_mortality_corr_by_step_{epoch}.png"), dpi=150)
-        plt.close(fig)
+            bin_centers_t, smoothed_t = tools.compute_mortality_curve(phys_rets, morts)
+            if len(bin_centers_t) > 1:
+                ai_mort_t = np.array([float(np.interp(r, bin_centers_t, smoothed_t)) for r in ai_rets], dtype=np.float32)
+                if ai_mort_t.std() > 1e-6:
+                    r_mort, _ = pearsonr(vals, ai_mort_t)
+                    if np.isnan(best_r_mort) or r_mort < best_r_mort:
+                        best_r_mort = r_mort
+                        best_t_mort = t
 
-        vals_best = np.array(critic_by_step[best_t]["values"], dtype=np.float32)
-        morts_best = np.array(critic_by_step[best_t]["mortalities"], dtype=np.float32)
-        fig2, _, _, _ = tools.plot_mortality_vs_value(
-            vals_best, morts_best,
-            xlabel=f"Critic V(s_{best_t})  [best step, r={best_r:.3f}]",
-        )
-        fig2.savefig(os.path.join(self._logdir, f"mortality_vs_critic_best_step{best_t}_{epoch}.png"), dpi=150)
-        plt.close(fig2)
+        if best_t_ret is not None:
+            metrics["critic_ai_return_corr_best_t"] = best_t_ret + 4
+            metrics["critic_ai_return_corr_best_r"] = round(float(best_r_ret), 4)
+            d = critic_by_step[best_t_ret]
+            vals = np.array(d["values"], dtype=np.float32)
+            ai_rets = np.array(d["ai_returns"], dtype=np.float32)
+            fig, _, _, _ = tools.plot_mortality_vs_value(vals, ai_rets, xlabel=f"Critic V(s_{best_t_ret+4})  [r={best_r_ret:.3f}]")
+            fig.axes[0].set_ylabel("AI Return")
+            fig.savefig(os.path.join(self._logdir, f"ai_return_vs_critic_{epoch}.png"), dpi=150)
+            plt.close(fig)
+
+        if best_t_mort is not None:
+            metrics["critic_ai_mortality_corr_best_t"] = best_t_mort + 4
+            metrics["critic_ai_mortality_corr_best_r"] = round(float(best_r_mort), 4)
+            d = critic_by_step[best_t_mort]
+            vals = np.array(d["values"], dtype=np.float32)
+            phys_rets = np.array(d["phys_returns"], dtype=np.float32)
+            ai_rets = np.array(d["ai_returns"], dtype=np.float32)
+            morts = np.array(d["mortalities"], dtype=np.float32)
+            bin_centers_t, smoothed_t = tools.compute_mortality_curve(phys_rets, morts)
+            ai_mort = np.array([float(np.interp(r, bin_centers_t, smoothed_t)) for r in ai_rets], dtype=np.float32)
+            fig2, _, _, _ = tools.plot_mortality_vs_value(vals, ai_mort, xlabel=f"Critic V(s_{best_t_mort+4})  [AI mort, r={best_r_mort:.3f}]")
+            fig2.savefig(os.path.join(self._logdir, f"ai_mortality_vs_critic_{epoch}.png"), dpi=150)
+            plt.close(fig2)
 
     def train(self, epochs):
         for epoch in trange(0, epochs + 1, desc="Training"):
@@ -346,7 +363,7 @@ class Dreamer(nn.Module):
         lambda_return_targets = []
         phi_all_t = []
         value_all_t = []
-        critic_by_step = {}  # t -> list of (V(s_t), mortality) pairs
+        critic_by_step = {}
 
         self._set_eval_mode()
         first_debug_done = False
@@ -385,15 +402,6 @@ class Dreamer(nn.Module):
                 self._collect_all_timesteps(full_states, data, phi_all_t, value_all_t)
 
                 mortality = float(tools.to_np(data["mortality"][0, 0]))
-                feat_all = self._wm.dynamics.get_feat(full_states)  # (B, T, D)
-                for t in range(4, min(T, 30)):
-                    v = float(tools.to_np(
-                        self._task_behavior.value(feat_all[:, t]).mode().squeeze()
-                    ))
-                    if t not in critic_by_step:
-                        critic_by_step[t] = {"values": [], "mortalities": []}
-                    critic_by_step[t]["values"].append(v)
-                    critic_by_step[t]["mortalities"].append(mortality)
 
                 if not debug_now:
                     self._wm.dynamics._debug_img_mode = False
@@ -402,8 +410,9 @@ class Dreamer(nn.Module):
                 self._wm.dynamics._debug_img_mode = False
 
                 feat_prior = self._wm.dynamics.get_feat(prior)
-                wm_phys_return = self._wm.heads["reward"](feat_prior).mode().sum(dim=1).squeeze()
-                wm_phys_returns.append(float(tools.to_np(wm_phys_return)))
+                phys_step_rewards_t = np.atleast_1d(tools.to_np(self._wm.heads["reward"](feat_prior).mode().squeeze()))  # (T_roll,)
+                wm_phys_return = float(phys_step_rewards_t.sum())
+                wm_phys_returns.append(wm_phys_return)
 
                 phys_episode_returns.append(tools.to_np(data["reward"][:, 5:].sum(dim=1).squeeze()))
                 mortalities.append(tools.to_np(data["mortality"][:, 0].squeeze()))
@@ -417,9 +426,24 @@ class Dreamer(nn.Module):
 
                 T_roll = prior["stoch"].shape[1]
 
-                ai_episode_return, ai_actions_ep, ai_probs_np = self._run_ai_rollout(full_states, T_roll)
+                ai_episode_return, ai_actions_ep, ai_probs_np, ai_step_rewards = self._run_ai_rollout(full_states, T_roll)
                 ai_actions.append(ai_actions_ep)
                 ai_sample_counts += np.bincount(ai_actions_ep, minlength=self._config.num_actions)
+
+                feat_all = self._wm.dynamics.get_feat(full_states)
+                mortality = float(tools.to_np(data["mortality"][0, 0]))
+                T_steps = min(T_roll, 26)
+                for t in range(T_steps):
+                    v_t = float(tools.to_np(self._task_behavior.value(feat_all[:, t + 4]).mode().squeeze()))
+                    phys_ret_t = float(phys_step_rewards_t[t:].sum())
+                    ai_ret_t = sum(ai_step_rewards[t:])
+                    if t not in critic_by_step:
+                        critic_by_step[t] = {"values": [], "phys_returns": [], "ai_returns": [], "mortalities": []}
+                    critic_by_step[t]["values"].append(v_t)
+                    critic_by_step[t]["phys_returns"].append(phys_ret_t)
+                    critic_by_step[t]["ai_returns"].append(ai_ret_t)
+                    critic_by_step[t]["mortalities"].append(mortality)
+
 
                 if debug_now:
                     print("\n[EVAL AI POLICY PROBS DEBUG]")
@@ -453,7 +477,7 @@ class Dreamer(nn.Module):
             print("No valid episodes for evaluation.", flush=True)
             return
 
-        ope_summary, fig, fig_wm, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates = \
+        ope_summary, fig, fig_wm, fig_value, phys_episode_returns, ai_episode_returns, mortalities, value_estimates, wm_bin_centers, wm_smoothed = \
             self._finalize_ope(ope_trajs, ai_episode_returns, phys_episode_returns,
                                wm_phys_returns, mortalities, value_estimates, true_mortality,
                                valid_episodes, imag_rewards, ai_sample_counts)
@@ -469,7 +493,7 @@ class Dreamer(nn.Module):
             metrics["critic_return_corr"] = round(float(corr), 4)
 
         if critic_by_step:
-            self._plot_critic_by_step(critic_by_step, epoch, metrics)
+            self._plot_critic_vs_ai(critic_by_step, epoch, metrics)
 
         rows_mort, rows_phys, rows_ai, rows_sofa = [], [], [], []
         for i, (mort_arr, phys_arr, ai_arr) in enumerate(zip(full_mort, phys_actions, ai_actions)):
@@ -527,7 +551,6 @@ class Dreamer(nn.Module):
         reward_action_range_list = []
         reward_action_std_list = []
         reward_action_best_list = []
-        cont_action_best_list = []
         reward_action0_rank_list = []
 
         cont_correct = 0
@@ -616,24 +639,18 @@ class Dreamer(nn.Module):
                 # WM ACTION SENSITIVITY: one-step from real state t=4
                 state_probe = {k: v[:, -1] for k, v in states.items()}
                 rewards_by_action = []
-                cont_by_action = []
-
                 for a in range(self._config.num_actions):
                     action_a = torch.zeros((1, self._config.num_actions), device=self._config.device, dtype=torch.float32)
                     action_a[:, a] = 1.0
                     next_state_a = self._wm.dynamics.img_step(state_probe, action_a, sample=True)
                     feat_a = self._wm.dynamics.get_feat(next_state_a)
                     rewards_by_action.append(float(self._wm.heads["reward"](feat_a).mode().squeeze().item()))
-                    cont_by_action.append(float(self._wm.heads["cont"](feat_a).mode().squeeze().item()))
 
                 rewards_by_action = np.array(rewards_by_action, dtype=np.float32)
-                cont_by_action = np.array(cont_by_action, dtype=np.float32)
 
                 reward_action_range_list.append(float(rewards_by_action.max() - rewards_by_action.min()))
                 reward_action_std_list.append(float(rewards_by_action.std()))
                 reward_action_best_list.append(int(rewards_by_action.argmax()))
-                cont_action_best_list.append(int(cont_by_action.argmax()))
-
                 rank_desc = np.argsort(-rewards_by_action)
                 action0_rank = int(np.where(rank_desc == 0)[0][0]) + 1
                 reward_action0_rank_list.append(action0_rank)
@@ -641,9 +658,9 @@ class Dreamer(nn.Module):
                 if debug_now:
                     print("\n[WM ONE-STEP ACTION DEBUG]")
                     print("reward_by_action:", np.round(rewards_by_action, 4).tolist())
-                    print("cont_by_action:", np.round(cont_by_action, 4).tolist())
+
                     print("best_reward_action:", int(rewards_by_action.argmax()))
-                    print("best_cont_action:", int(cont_by_action.argmax()))
+
                     print("action0_reward_rank:", int(action0_rank))
                     print("reward_range:", float(rewards_by_action.max() - rewards_by_action.min()))
                     print("reward_std:", float(rewards_by_action.std()))
@@ -903,15 +920,11 @@ class Dreamer(nn.Module):
             "reward_action_std_std": float(np.std(reward_action_std_list)),
             "reward_action0_rank_mean": float(np.mean(reward_action0_rank_list)),
             "reward_action0_best_frac": float(np.mean(np.array(reward_action_best_list) == 0)),
-            "cont_action0_best_frac": float(np.mean(np.array(cont_action_best_list) == 0)),
         }
 
         reward_best_action_counts = np.bincount(np.array(reward_action_best_list, dtype=np.int64), minlength=self._config.num_actions)
-        cont_best_action_counts = np.bincount(np.array(cont_action_best_list, dtype=np.int64), minlength=self._config.num_actions)
         for a, count in enumerate(reward_best_action_counts):
             wm_metrics[f"reward_best_action_{a}_frac"] = float(count / max(len(reward_action_best_list), 1))
-        for a, count in enumerate(cont_best_action_counts):
-            wm_metrics[f"cont_best_action_{a}_frac"] = float(count / max(len(cont_action_best_list), 1))
 
         wm_metrics["cont_acc"] = cont_correct / max(cont_total, 1)
 
@@ -1047,7 +1060,7 @@ class Dreamer(nn.Module):
                 ))
 
                 T_roll = prior["stoch"].shape[1]
-                ai_episode_return, ai_actions_ep, ai_probs_np = self._run_ai_rollout(full_states, T_roll)
+                ai_episode_return, ai_actions_ep, ai_probs_np, ai_step_rewards = self._run_ai_rollout(full_states, T_roll)
                 ai_actions.append(ai_actions_ep)
                 ai_sample_counts += np.bincount(ai_actions_ep, minlength=self._config.num_actions)
 
