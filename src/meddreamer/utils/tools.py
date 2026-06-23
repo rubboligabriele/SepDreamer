@@ -1017,9 +1017,31 @@ def plot_mortality_vs_value(value_values, mortality, num_bins=20, xlabel="Estima
     ax.tick_params(labelsize=15)
     ax.grid()
     fig.tight_layout()
-    plt.show()
 
     return fig, bin_centers, smoothed, smoothed_std
+
+
+def compute_mortality_curve(value_values, mortality, num_bins=20):
+    q01, q99 = np.quantile(value_values, [0.01, 0.99])
+    mask = (value_values >= q01) & (value_values <= q99)
+    value_values = value_values[mask]
+    mortality = mortality[mask.squeeze()]
+
+    bin_edges = np.linspace(q01, q99, num_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_indices = np.digitize(value_values, bin_edges) - 1
+
+    mortality_means = np.full(num_bins, np.nan)
+    for i in range(num_bins):
+        in_bin = bin_indices == i
+        if np.sum(in_bin) >= 2:
+            mortality_means[i] = np.mean(mortality[in_bin])
+
+    valid = ~np.isnan(mortality_means)
+    bin_centers = bin_centers[valid]
+    smoothed = sliding_mean(mortality_means[valid])
+
+    return bin_centers, smoothed
 
 
 def plot_critic_vs_feature(feature_values, critic_values, xlabel="Feature", num_bins=15):
