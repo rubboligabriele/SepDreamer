@@ -1182,20 +1182,23 @@ def plot_recon_error_per_feature(
 
 
 def calculate_estimated_mortality(ai_values, bin_centers, smoothed, smoothed_sem):
+    # Map each AI patient's return to the calibration curve, then average across patients.
+    # This matches the standard literature approach (e.g. Komorowski 2018, Raghu 2017):
+    # bin each patient individually rather than interpolating the population mean.
+    per_patient_mortality = np.interp(ai_values, bin_centers, smoothed)
+    per_patient_std = np.interp(ai_values, bin_centers, smoothed_sem)
 
-    q_mean = np.mean(ai_values)
+    ai_mortality = float(np.mean(per_patient_mortality))
+    ai_std = float(np.mean(per_patient_std))
 
     print("\n[MORTALITY INTERP DEBUG]")
-    print("ai_return_mean =", float(q_mean))
+    print("ai_return_mean =", float(np.mean(ai_values)))
+    print("ai_return_std =", float(np.std(ai_values)))
     print("curve_return_min =", float(np.min(bin_centers)))
     print("curve_return_max =", float(np.max(bin_centers)))
-    print("curve_mort_min =", float(np.nanmin(smoothed)))
-    print("curve_mort_max =", float(np.nanmax(smoothed)))
-    print("ai_return_below_curve =", bool(q_mean < np.min(bin_centers)))
-    print("ai_return_above_curve =", bool(q_mean > np.max(bin_centers)))
-
-    ai_mortality = np.interp(q_mean, bin_centers, smoothed)
-    ai_std = np.interp(q_mean, bin_centers, smoothed_sem)
+    print("frac_below_curve =", float(np.mean(ai_values < np.min(bin_centers))))
+    print("frac_above_curve =", float(np.mean(ai_values > np.max(bin_centers))))
+    print("ai_mortality_estimated =", round(ai_mortality * 100, 2))
 
     return ai_mortality, ai_std
 
