@@ -463,7 +463,7 @@ class Dreamer(nn.Module):
                     )
                     traj_ope = tools.compute_ope_trajectory(
                         pi_ai_clin_list, pi_b_clin_list, reward_list,
-                        gamma=self._config.discount, prob_eps=1e-6, rho_max=5.0, max_ope_steps=30,
+                        gamma=self._config.discount, prob_eps=1e-6, rho_max=20.0, max_ope_steps=30,
                     )
                     if traj_ope is not None:
                         ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))
@@ -1078,7 +1078,7 @@ class Dreamer(nn.Module):
                     )
                     traj_ope = tools.compute_ope_trajectory(
                         pi_ai_clin_list, pi_b_clin_list, reward_list,
-                        gamma=self._config.discount, prob_eps=1e-6, rho_max=5.0, max_ope_steps=30,
+                        gamma=self._config.discount, prob_eps=1e-6, rho_max=20.0, max_ope_steps=30,
                     )
                     if traj_ope is not None:
                         ope_trajs.append(self._augment_traj_debug(traj_ope, clin_action_list, stay_id))

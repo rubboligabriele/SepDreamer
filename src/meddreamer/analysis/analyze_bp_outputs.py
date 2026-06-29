@@ -117,27 +117,41 @@ def make_plots(df, output_dir):
     plt.savefig(os.path.join(output_dir, "bp_per_action.png"), dpi=200)
     plt.close()
 
-    # action distribution: clinician vs behavior top-1
-    if "bp_action" in df.columns:
-        clin_dist = df["clin_action"].value_counts(normalize=True).sort_index()
-        bp_dist = df["bp_action"].value_counts(normalize=True).sort_index()
-        actions = sorted(set(clin_dist.index).union(set(bp_dist.index)))
-        clin_vals = [clin_dist.get(a, 0.0) for a in actions]
-        bp_vals = [bp_dist.get(a, 0.0) for a in actions]
-        x_act = np.arange(len(actions))
-        width = 0.38
-        fig, ax = plt.subplots(figsize=(14, 5))
-        ax.bar(x_act - width / 2, clin_vals, width, label="Clinician")
-        ax.bar(x_act + width / 2, bp_vals, width, label="Behavior policy (top-1)")
-        ax.set_xticks(x_act)
-        ax.set_xticklabels(actions, rotation=90)
-        ax.set_xlabel("Action")
-        ax.set_ylabel("Frequency")
-        ax.set_title("Action distribution: Clinician vs Behavior policy")
-        ax.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "bp_action_distribution.png"), dpi=200)
-        plt.close()
+    # per-action OPE quality: mean pi_b(a_clin|s) and frac<1%
+    action_ids_ope, mean_probs_ope, frac_low_ope, n_steps = [], [], [], []
+    for a in range(n_actions):
+        sub = df[df["clin_action"] == a]
+        if len(sub) == 0:
+            continue
+        action_ids_ope.append(a)
+        mean_probs_ope.append(sub["pi_b_clin"].mean())
+        frac_low_ope.append((sub["pi_b_clin"] < 0.01).mean())
+        n_steps.append(len(sub))
+
+    x_act = np.arange(len(action_ids_ope))
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+    bars = axes[0].bar(x_act, mean_probs_ope, color="steelblue", edgecolor="k")
+    axes[0].axhline(1 / n_actions, color="red", linestyle="--", label=f"uniform={1/n_actions:.3f}")
+    axes[0].set_ylabel("Mean pi_b(a_clin | s)")
+    axes[0].set_title("Behavior policy quality per action (OPE perspective)")
+    axes[0].legend()
+    for i, (bar, n) in enumerate(zip(bars, n_steps)):
+        axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.002,
+                     f"n={n//1000}k" if n >= 1000 else f"n={n}",
+                     ha="center", va="bottom", fontsize=6, rotation=90)
+
+    axes[1].bar(x_act, [f * 100 for f in frac_low_ope], color="tomato", edgecolor="k")
+    axes[1].axhline(5, color="orange", linestyle="--", label="5% threshold")
+    axes[1].set_ylabel("% steps with pi_b < 0.01 (IS blowup risk)")
+    axes[1].set_xlabel("Clinician action")
+    axes[1].set_xticks(x_act)
+    axes[1].set_xticklabels(action_ids_ope)
+    axes[1].legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "bp_ope_quality_per_action.png"), dpi=200)
+    plt.close()
 
     # IS ratio contribution: log10(1/pi_b)
     log_ratio = np.log10(1.0 / (pi_b + 1e-12))

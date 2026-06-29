@@ -102,8 +102,8 @@ behavior:
   behavior_model:
     type: 'lstm'
     input_type: 'raw'
-    hidden_size: 16
-    num_layers: 1
+    hidden_size: 128
+    num_layers: 2
     lr: 1e-4
     eps: 1e-8
     grad_clip: 100.0
